@@ -90,6 +90,10 @@ struct SetupState {
     status: String,
     download_progress: Option<Arc<DownloadProgress>>,
     model_downloaded: bool,
+    // Overlay settings (persisted from config)
+    overlay_visible: bool,
+    overlay_x: Option<i32>,
+    overlay_y: Option<i32>,
 
     // UI state
     hovered_button: Option<Button>,
@@ -237,6 +241,12 @@ impl SetupState {
             status,
             download_progress: None,
             model_downloaded,
+            overlay_visible: existing_config
+                .as_ref()
+                .map(|c| c.overlay_visible)
+                .unwrap_or(true),
+            overlay_x: existing_config.as_ref().and_then(|c| c.overlay_x),
+            overlay_y: existing_config.as_ref().and_then(|c| c.overlay_y),
             hovered_button: None,
             mouse_pos: (0.0, 0.0),
         }
@@ -973,7 +983,7 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
                 state.selected_backend_id.as_ref(),
             ) {
                 let model_path = models_dir.join(&unified.model.folder_name);
-                let config = Config::for_model(
+                let mut config = Config::for_model(
                     backend_id,
                     &unified.model.id,
                     model_path,
@@ -983,6 +993,9 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
                     state.cuda_path.clone(),
                     state.cudnn_path.clone(),
                 );
+                config.overlay_visible = state.overlay_visible;
+                config.overlay_x = state.overlay_x;
+                config.overlay_y = state.overlay_y;
                 if let Err(e) = config.save() {
                     state.status = format!("Error saving config: {}", e);
                     return None;
