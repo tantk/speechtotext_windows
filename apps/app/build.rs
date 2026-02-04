@@ -8,10 +8,10 @@ fn main() {
     }
 
     // Check if model exists, print helpful message if not
-    let model_path = Path::new("models/ggml-tiny.bin");
+    let model_path = Path::new("target/release/models/ggml-tiny.bin");
 
     if !model_path.exists() {
-        println!("cargo:warning=Whisper model not found at models/ggml-tiny.bin");
+        println!("cargo:warning=Whisper model not found at target/release/models/ggml-tiny.bin");
         println!("cargo:warning=Download from: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin");
         println!("cargo:warning=Place the file in the models/ directory before running");
     }
