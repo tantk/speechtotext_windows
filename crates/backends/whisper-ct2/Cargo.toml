@@ -1,0 +1,16 @@
+[package]
+name = "whisper-ct2"
+version.workspace = true
+edition.workspace = true
+description = "CTranslate2-based Whisper backend for app"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+app-core = { path = "../../app-core" }
+ct2rs = { version = "0.9", features = ["whisper"], default-features = false }
+
+[features]
+default = []
+cuda = ["ct2rs/cuda", "ct2rs/cudnn", "ct2rs/cuda-dynamic-loading"]

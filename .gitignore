@@ -1,0 +1,9 @@
+/target
+/dist
+/archive
+/models
+/app.log
+/config.json
+/hf_model*.json
+Thumbs.db
+Desktop.ini

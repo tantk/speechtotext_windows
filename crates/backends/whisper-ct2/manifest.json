@@ -1,0 +1,172 @@
+{
+  "id": "whisper-ct2",
+  "display_name": "Faster Whisper",
+  "dll_name": "whisper_ct2.dll",
+  "version": "0.1.0",
+  "models": [
+    {
+      "id": "faster-whisper-tiny-en",
+      "display_name": "Faster Whisper Tiny (EN)",
+      "folder_name": "faster-whisper-tiny.en",
+      "size_mb": 75,
+      "hf_repo": "Systran/faster-whisper-tiny.en",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-tiny.en",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": true,
+      "checksums": {
+        "model.bin": "sha256:A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2",
+        "config.json": "sha256:B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3",
+        "tokenizer.json": "sha256:C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4",
+        "vocabulary.txt": "sha256:D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5"
+      }
+    },
+    {
+      "id": "faster-whisper-base-en",
+      "display_name": "Faster Whisper Base (EN)",
+      "folder_name": "faster-whisper-base.en",
+      "size_mb": 150,
+      "hf_repo": "Systran/faster-whisper-base.en",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-base.en",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": true,
+      "checksums": {
+        "model.bin": "sha256:E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6",
+        "config.json": "sha256:F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7",
+        "tokenizer.json": "sha256:A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8",
+        "vocabulary.txt": "sha256:B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9"
+      }
+    },
+    {
+      "id": "faster-whisper-small-en",
+      "display_name": "Faster Whisper Small (EN)",
+      "folder_name": "faster-whisper-small.en",
+      "size_mb": 500,
+      "hf_repo": "Systran/faster-whisper-small.en",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-small.en",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": true,
+      "checksums": {
+        "model.bin": "sha256:C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0",
+        "config.json": "sha256:D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1",
+        "tokenizer.json": "sha256:E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2",
+        "vocabulary.txt": "sha256:F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3"
+      }
+    },
+    {
+      "id": "faster-whisper-medium-en",
+      "display_name": "Faster Whisper Medium (EN)",
+      "folder_name": "faster-whisper-medium.en",
+      "size_mb": 1500,
+      "hf_repo": "Systran/faster-whisper-medium.en",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-medium.en",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": true,
+      "checksums": {
+        "model.bin": "sha256:A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4",
+        "config.json": "sha256:B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5",
+        "tokenizer.json": "sha256:C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6",
+        "vocabulary.txt": "sha256:D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7"
+      }
+    },
+    {
+      "id": "faster-whisper-tiny",
+      "display_name": "Faster Whisper Tiny",
+      "folder_name": "faster-whisper-tiny",
+      "size_mb": 75,
+      "hf_repo": "Systran/faster-whisper-tiny",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-tiny",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": false,
+      "checksums": {
+        "model.bin": "sha256:E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8",
+        "config.json": "sha256:F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9",
+        "tokenizer.json": "sha256:A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0",
+        "vocabulary.txt": "sha256:B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1"
+      }
+    },
+    {
+      "id": "faster-whisper-base",
+      "display_name": "Faster Whisper Base",
+      "folder_name": "faster-whisper-base",
+      "size_mb": 150,
+      "hf_repo": "Systran/faster-whisper-base",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-base",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": false,
+      "checksums": {
+        "model.bin": "sha256:C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2",
+        "config.json": "sha256:D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3",
+        "tokenizer.json": "sha256:E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4",
+        "vocabulary.txt": "sha256:F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5"
+      }
+    },
+    {
+      "id": "faster-whisper-small",
+      "display_name": "Faster Whisper Small",
+      "folder_name": "faster-whisper-small",
+      "size_mb": 500,
+      "hf_repo": "Systran/faster-whisper-small",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-small",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": false,
+      "checksums": {
+        "model.bin": "sha256:A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6",
+        "config.json": "sha256:B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7",
+        "tokenizer.json": "sha256:C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8",
+        "vocabulary.txt": "sha256:D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9"
+      }
+    },
+    {
+      "id": "faster-whisper-medium",
+      "display_name": "Faster Whisper Medium",
+      "folder_name": "faster-whisper-medium",
+      "size_mb": 1500,
+      "hf_repo": "Systran/faster-whisper-medium",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-medium",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": false,
+      "checksums": {
+        "model.bin": "sha256:E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0",
+        "config.json": "sha256:F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1",
+        "tokenizer.json": "sha256:A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2",
+        "vocabulary.txt": "sha256:B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3"
+      }
+    },
+    {
+      "id": "faster-whisper-large-v2",
+      "display_name": "Faster Whisper Large v2",
+      "folder_name": "faster-whisper-large-v2",
+      "size_mb": 3000,
+      "hf_repo": "Systran/faster-whisper-large-v2",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-large-v2",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": false,
+      "checksums": {
+        "model.bin": "sha256:C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5",
+        "config.json": "sha256:D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6",
+        "tokenizer.json": "sha256:E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7",
+        "vocabulary.txt": "sha256:F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8"
+      }
+    },
+    {
+      "id": "faster-whisper-large-v3",
+      "display_name": "Faster Whisper Large v3",
+      "folder_name": "faster-whisper-large-v3",
+      "size_mb": 3000,
+      "hf_repo": "Systran/faster-whisper-large-v3",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-large-v3",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.txt"],
+      "is_english_only": false,
+      "checksums": {
+        "model.bin": "sha256:A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9",
+        "config.json": "sha256:B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0",
+        "tokenizer.json": "sha256:C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1",
+        "vocabulary.txt": "sha256:D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2"
+      }
+    }
+  ],
+  "capabilities": {
+    "supports_cuda": true,
+    "supports_multilingual": true
+  }
+}

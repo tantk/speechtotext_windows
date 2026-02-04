@@ -1,0 +1,7 @@
+[package]
+name = "app-core"
+version.workspace = true
+edition.workspace = true
+description = "Shared FFI types for app backend plugins"
+
+[dependencies]

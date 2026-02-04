@@ -1,0 +1,16 @@
+[package]
+name = "whisper-cpp"
+version.workspace = true
+edition.workspace = true
+description = "whisper.cpp-based Whisper backend for app"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+app-core = { path = "../../app-core" }
+whisper-rs = "0.15"
+
+[features]
+default = []
+cuda = ["whisper-rs/cuda"]
