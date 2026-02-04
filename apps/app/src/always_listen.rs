@@ -65,7 +65,7 @@ impl Default for AlwaysListenConfig {
         Self {
             pre_roll_duration_ms: 500,     // 500ms pre-roll
             min_speech_duration_ms: 300,   // 300ms min speech
-            post_silence_duration_ms: 800, // 800ms silence = end
+            post_silence_duration_ms: 5000, // 5s silence = end
             vad_threshold: 0.015,          // Energy threshold (tuned for typical mics)
             max_utterance_seconds: 30.0,   // Max 30s utterance
             cooldown_ms: 200,              // 200ms between utterances

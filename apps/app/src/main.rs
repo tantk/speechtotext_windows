@@ -14,7 +14,7 @@ mod typer;
 
 use anyhow::Result;
 use backend_loader::LoadedBackend;
-use config::{setup_cuda_env, Config};
+use config::{get_exe_stem, setup_cuda_env, Config};
 use cpal::traits::StreamTrait;
 use hotkeys::{check_hotkey_event, HotkeyAction, HotkeyManager};
 use overlay::Overlay;
@@ -27,6 +27,12 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tray::AppStatus;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::CreateMutexW;
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppMode {
@@ -61,15 +67,63 @@ fn init_logging(file_writer: tracing_appender::non_blocking::NonBlocking) {
     }
 }
 
+#[cfg(target_os = "windows")]
+struct InstanceLock {
+    handle: HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for InstanceLock {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn acquire_instance_lock() -> Result<Option<InstanceLock>> {
+    let stem = get_exe_stem()?;
+    let mutex_name = format!("Global\\app-{}", stem);
+    let mut wide: Vec<u16> = mutex_name.encode_utf16().collect();
+    wide.push(0);
+
+    unsafe {
+        let handle = CreateMutexW(None, false, PCWSTR(wide.as_ptr()));
+        if handle.0 == 0 {
+            return Err(anyhow::anyhow!("Failed to create instance lock"));
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            return Ok(None);
+        }
+        Ok(Some(InstanceLock { handle }))
+    }
+}
+
 fn main() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    let _instance_lock = {
+        let lock = acquire_instance_lock()?;
+        if lock.is_none() {
+            show_error_dialog(
+                "Already Running",
+                "Another instance with the same executable name is already running.",
+            );
+            return Ok(());
+        }
+        // Keep lock alive for the lifetime of the process.
+        lock
+    };
+
     // Initialize logging with file output
     let log_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    // Create a file appender that writes to app.log
-    let file_appender = tracing_appender::rolling::never(&log_dir, "app.log");
+    let log_name = format!("app-{}.log", get_exe_stem().unwrap_or_else(|_| "app".to_string()));
+    // Create a file appender that writes to app-<exe>.log
+    let file_appender = tracing_appender::rolling::never(&log_dir, log_name.clone());
     let (file_writer, _log_guard) = tracing_appender::non_blocking(file_appender);
 
     // Set up logging with both console (for debug builds) and file output
@@ -79,7 +133,7 @@ fn main() -> Result<()> {
     info!("========================================");
     info!("  Speech-to-Text for Windows");
     info!("========================================");
-    info!("Log file: {}", log_dir.join("app.log").display());
+    info!("Log file: {}", log_dir.join(log_name).display());
 
     // Check if config exists and model is available
     let config = match Config::load() {

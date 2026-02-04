@@ -62,6 +62,17 @@ pub fn get_exe_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Could not get exe directory"))
 }
 
+/// Get the executable stem (used for per-instance config/log naming)
+pub fn get_exe_stem() -> Result<String> {
+    let exe_path = std::env::current_exe()?;
+    let stem = exe_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("app");
+    Ok(stem.to_string())
+}
+
 /// Get the models directory (next to exe)
 pub fn get_models_dir() -> Result<PathBuf> {
     Ok(get_exe_dir()?.join("models"))
@@ -74,6 +85,11 @@ pub fn get_backends_dir() -> Result<PathBuf> {
 
 /// Get the config file path (next to exe)
 pub fn get_config_path() -> Result<PathBuf> {
+    let stem = get_exe_stem()?;
+    Ok(get_exe_dir()?.join(format!("config-{}.json", stem)))
+}
+
+fn get_legacy_config_path() -> Result<PathBuf> {
     Ok(get_exe_dir()?.join("config.json"))
 }
 
@@ -457,7 +473,16 @@ impl Config {
             let config: Config = serde_json::from_str(&content)?;
             Ok(config)
         } else {
-            Err(anyhow::anyhow!("Config file not found"))
+            let legacy_path = get_legacy_config_path()?;
+            if legacy_path.exists() {
+                let content = fs::read_to_string(&legacy_path)?;
+                let config: Config = serde_json::from_str(&content)?;
+                let content = serde_json::to_string_pretty(&config)?;
+                let _ = fs::write(config_path, content);
+                Ok(config)
+            } else {
+                Err(anyhow::anyhow!("Config file not found"))
+            }
         }
     }
 

@@ -57,19 +57,19 @@ copy docs\BACKEND_TESTING.md %RELEASE_DIR%\ 2>nul
 copy docs\UI_TESTING.md %RELEASE_DIR%\ 2>nul
 
 REM Create default config
-echo { > %RELEASE_DIR%\config.json
-echo   "backend_id": "whisper-cpp", >> %RELEASE_DIR%\config.json
-echo   "model_name": "ggml-tiny", >> %RELEASE_DIR%\config.json
-echo   "model_path": "models/ggml-tiny", >> %RELEASE_DIR%\config.json
-echo   "use_gpu": true, >> %RELEASE_DIR%\config.json
-echo   "cuda_path": null, >> %RELEASE_DIR%\config.json
-echo   "cudnn_path": null, >> %RELEASE_DIR%\config.json
-echo   "hotkey_push_to_talk": "Backquote", >> %RELEASE_DIR%\config.json
-echo   "hotkey_always_listen": "Control+Backquote", >> %RELEASE_DIR%\config.json
-echo   "overlay_visible": true, >> %RELEASE_DIR%\config.json
-echo   "overlay_x": null, >> %RELEASE_DIR%\config.json
-echo   "overlay_y": null >> %RELEASE_DIR%\config.json
-echo } >> %RELEASE_DIR%\config.json
+echo { > %RELEASE_DIR%\config-app.json
+echo   "backend_id": "whisper-cpp", >> %RELEASE_DIR%\config-app.json
+echo   "model_name": "ggml-tiny", >> %RELEASE_DIR%\config-app.json
+echo   "model_path": "models/ggml-tiny", >> %RELEASE_DIR%\config-app.json
+echo   "use_gpu": true, >> %RELEASE_DIR%\config-app.json
+echo   "cuda_path": null, >> %RELEASE_DIR%\config-app.json
+echo   "cudnn_path": null, >> %RELEASE_DIR%\config-app.json
+echo   "hotkey_push_to_talk": "Backquote", >> %RELEASE_DIR%\config-app.json
+echo   "hotkey_always_listen": "Control+Backquote", >> %RELEASE_DIR%\config-app.json
+echo   "overlay_visible": true, >> %RELEASE_DIR%\config-app.json
+echo   "overlay_x": null, >> %RELEASE_DIR%\config-app.json
+echo   "overlay_y": null >> %RELEASE_DIR%\config-app.json
+echo } >> %RELEASE_DIR%\config-app.json
 
 REM Create batch file for easy launch
 echo @echo off > %RELEASE_DIR%\App.bat
@@ -90,7 +90,7 @@ echo [5/5] Build Summary:
 echo   - Main executable: %RELEASE_DIR%\app.exe
 echo   - Backend: %RELEASE_DIR%\backends\whisper-cpp\
 echo   - Models folder: %RELEASE_DIR%\models\
-echo   - Config: %RELEASE_DIR%\config.json
+echo   - Config: %RELEASE_DIR%\config-app.json
 echo.
 
 REM File sizes

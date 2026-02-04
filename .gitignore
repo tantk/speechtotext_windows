@@ -2,7 +2,8 @@
 /dist
 /archive
 /models
-/app.log
+/app-*.log
+/config-*.json
 /config.json
 /hf_model*.json
 Thumbs.db
