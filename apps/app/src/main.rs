@@ -441,7 +441,7 @@ fn run_app(mut config: Config) -> Result<()> {
         while always_listen_running.load(Ordering::SeqCst) {
             // Only process when always-listen is active
             if always_listen_active_thread.load(Ordering::SeqCst) {
-                if controller.state() == AlwaysListenState::Listening {
+                if controller.state() == AlwaysListenState::Paused {
                     let _ = controller.start();
                 }
                 
@@ -453,7 +453,7 @@ fn run_app(mut config: Config) -> Result<()> {
                     let _ = al_proxy.send_event(UserEvent::AlwaysListenAudio(audio_data));
                 }
             } else {
-                if controller.is_running() {
+                if controller.state() != AlwaysListenState::Paused {
                     let _ = controller.stop();
                 }
             }

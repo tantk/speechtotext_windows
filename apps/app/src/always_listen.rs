@@ -286,7 +286,7 @@ impl AlwaysListenController {
         let (internal_result_tx, result_rx) = crossbeam_channel::bounded::<Vec<f32>>(10);
 
         let state = Arc::new(Mutex::new(AlwaysListenState::Listening));
-        let running = Arc::new(AtomicBool::new(false));
+        let running = Arc::new(AtomicBool::new(true));
 
         // Clone values for the controller struct
         let state_for_controller = Arc::clone(&state);
@@ -318,7 +318,6 @@ impl AlwaysListenController {
 
     /// Start listening
     pub fn start(&self) -> Result<()> {
-        self.running.store(true, Ordering::SeqCst);
         self.command_tx
             .send(AlwaysListenCommand::Start)
             .context("Failed to send start command")?;
@@ -328,7 +327,6 @@ impl AlwaysListenController {
 
     /// Stop listening
     pub fn stop(&self) -> Result<()> {
-        self.running.store(false, Ordering::SeqCst);
         self.command_tx
             .send(AlwaysListenCommand::Stop)
             .context("Failed to send stop command")?;
@@ -380,7 +378,8 @@ impl AlwaysListenController {
 
 impl Drop for AlwaysListenController {
     fn drop(&mut self) {
-        let _ = self.stop();
+        self.running.store(false, Ordering::SeqCst);
+        let _ = self.command_tx.send(AlwaysListenCommand::Stop);
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
@@ -421,8 +420,7 @@ fn processing_loop(
         if let Ok(cmd) = command_rx.try_recv() {
             match cmd {
                 AlwaysListenCommand::Stop => {
-                    *state.lock() = AlwaysListenState::Listening;
-                    break;
+                    *state.lock() = AlwaysListenState::Paused;
                 }
                 AlwaysListenCommand::Pause => {
                     *state.lock() = AlwaysListenState::Paused;
