@@ -209,7 +209,7 @@ fn run_app(mut config: Config) -> Result<()> {
     setup_cuda_env(&config);
 
     // Initialize audio capture
-    let audio_capture = match audio::AudioCapture::new() {
+    let audio_capture = match audio::AudioCapture::new_with_device(config.input_device_name.as_deref()) {
         Ok(cap) => {
             info!("Audio capture ready");
             Arc::new(Mutex::new(cap))

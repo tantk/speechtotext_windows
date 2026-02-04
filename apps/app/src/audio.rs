@@ -18,13 +18,35 @@ pub struct AudioCapture {
 
 impl AudioCapture {
     pub fn new() -> Result<Self> {
+        Self::new_with_device(None)
+    }
+
+    pub fn new_with_device(device_name: Option<&str>) -> Result<Self> {
         let host = cpal::default_host();
 
         debug!("Audio host: {:?}", host.id());
 
-        let device = host
-            .default_input_device()
-            .context("No input device available")?;
+        let device = if let Some(name) = device_name {
+            let mut matched: Option<Device> = None;
+            if let Ok(mut devices) = host.input_devices() {
+                for dev in devices.by_ref() {
+                    if let Ok(dev_name) = dev.name() {
+                        if dev_name == name {
+                            matched = Some(dev);
+                            break;
+                        }
+                    }
+                }
+            }
+            if matched.is_none() {
+                warn!("Requested input device '{}' not found. Using default.", name);
+            }
+            matched
+        } else {
+            None
+        }
+        .or_else(|| host.default_input_device())
+        .context("No input device available")?;
 
         debug!("Input device: {:?}", device.name().unwrap_or_default());
 

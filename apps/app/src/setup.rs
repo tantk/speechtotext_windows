@@ -1,6 +1,7 @@
 use crate::backend_loader::{discover_backends, get_backends_dir, BackendManifest, ManifestModel};
 use crate::config::{detect_cuda_path, detect_cudnn_path, get_models_dir, validate_cuda_path, validate_cudnn_path, Config};
 use crate::downloader::{self, DownloadProgress};
+use cpal::traits::HostTrait;
 use image::GenericImageView;
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -36,6 +37,7 @@ enum SetupPage {
     ModelSelection,
     HotkeyConfig(HotkeyTarget),
     CudaConfig,
+    AudioConfig,
 }
 
 /// Unified model entry combining backend and model info
@@ -68,6 +70,10 @@ struct SetupState {
     all_models: Vec<UnifiedModel>,
     selected_model: Option<usize>,
     model_scroll_offset: usize,
+    // Audio input devices
+    input_devices: Vec<String>,
+    selected_input_device: Option<String>,
+    device_scroll_offset: usize,
 
     // Auto-selected backend (based on model choice)
     selected_backend_id: Option<String>,
@@ -104,6 +110,7 @@ struct SetupState {
 enum Button {
     // Home page
     SelectModel,
+    ConfigureMic,
     ConfigurePushToTalk,
     ConfigureToggleListen,
     GpuToggle,
@@ -127,6 +134,12 @@ enum Button {
     DetectCuda,
     BrowseCuda,
     BrowseCudnn,
+
+    // Audio config page
+    Device(usize),
+    DeviceScrollUp,
+    DeviceScrollDown,
+    ConfirmDevice,
 }
 
 struct ButtonRect {
@@ -138,10 +151,27 @@ struct ButtonRect {
 }
 
 const VISIBLE_MODELS: usize = 6;
+const VISIBLE_DEVICES: usize = 6;
+const DEFAULT_DEVICE_LABEL: &str = "<Default device>";
 
 impl SetupState {
     fn new() -> Self {
         let existing_config = Config::load().ok();
+
+        // Load audio input devices
+        let mut input_devices: Vec<String> = Vec::new();
+        input_devices.push(DEFAULT_DEVICE_LABEL.to_string());
+        if let Ok(mut devices) = cpal::default_host().input_devices() {
+            for dev in devices.by_ref() {
+                if let Ok(name) = dev.name() {
+                    input_devices.push(name);
+                }
+            }
+        }
+
+        let selected_input_device = existing_config
+            .as_ref()
+            .and_then(|c| c.input_device_name.clone());
 
         // Load available backends
         let available_backends: Vec<BackendManifest> = if let Ok(backends_dir) = get_backends_dir() {
@@ -218,6 +248,9 @@ impl SetupState {
             selected_model,
             model_scroll_offset: 0,
             selected_backend_id,
+            input_devices,
+            selected_input_device,
+            device_scroll_offset: 0,
             push_to_talk_hotkey: Some(
                 existing_config
                     .as_ref()
@@ -509,6 +542,18 @@ pub fn run_setup() -> ! {
                         .min((model_count.saturating_sub(VISIBLE_MODELS)) as i32);
                     state.model_scroll_offset = new_offset as usize;
                     window.request_redraw();
+                } else if state.current_page == SetupPage::AudioConfig {
+                    let scroll_amount = match delta {
+                        tao::event::MouseScrollDelta::LineDelta(_, y) => -y as i32,
+                        tao::event::MouseScrollDelta::PixelDelta(pos) => -(pos.y / 20.0) as i32,
+                        _ => 0,
+                    };
+                    let device_count = state.input_devices.len();
+                    let new_offset = (state.device_scroll_offset as i32 + scroll_amount)
+                        .max(0)
+                        .min((device_count.saturating_sub(VISIBLE_DEVICES)) as i32);
+                    state.device_scroll_offset = new_offset as usize;
+                    window.request_redraw();
                 }
             }
             Event::WindowEvent {
@@ -685,6 +730,7 @@ fn get_button_rects(state: &SetupState) -> Vec<ButtonRect> {
         SetupPage::ModelSelection => get_model_page_buttons(state),
         SetupPage::HotkeyConfig(_) => get_hotkey_page_buttons(state),
         SetupPage::CudaConfig => get_cuda_page_buttons(state),
+        SetupPage::AudioConfig => get_audio_page_buttons(state),
     }
 }
 
@@ -715,6 +761,17 @@ fn get_home_buttons(state: &SetupState) -> Vec<ButtonRect> {
     });
     y += ROW_SPACING;      // y = 195 - move to next row
 
+    // Configure Mic button (at y=210 in render)
+    y += LABEL_FIELD_GAP;  // y = 210 - button row
+    buttons.push(ButtonRect {
+        x: 380,
+        y,
+        width: 90,
+        height: FIELD_HEIGHT,
+        button: Button::ConfigureMic,
+    });
+    y += ROW_SPACING;      // y = 260 - move to next row
+
     // Configure Push-to-Talk button (at y=210 in render)
     y += LABEL_FIELD_GAP;  // y = 210 - button row
     buttons.push(ButtonRect {
@@ -737,8 +794,7 @@ fn get_home_buttons(state: &SetupState) -> Vec<ButtonRect> {
     });
     y += ROW_SPACING;      // y = 325 - move to next row
 
-    // GPU toggle button (at y=340 in render)
-    y += LABEL_FIELD_GAP;  // y = 340 - button row
+    // GPU toggle button (at y=390 in render)
     buttons.push(ButtonRect {
         x: 30,
         y,
@@ -808,6 +864,62 @@ fn get_cuda_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
         height: 35,
         button: Button::DetectCuda,
     });
+
+    buttons
+}
+
+fn get_audio_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
+    let mut buttons = Vec::new();
+
+    // Back button
+    buttons.push(ButtonRect {
+        x: 400,
+        y: 10,
+        width: 80,
+        height: 30,
+        button: Button::Back,
+    });
+
+    // Confirm button
+    buttons.push(ButtonRect {
+        x: 300,
+        y: 440,
+        width: 150,
+        height: 35,
+        button: Button::ConfirmDevice,
+    });
+
+    // Scroll buttons
+    buttons.push(ButtonRect {
+        x: 450,
+        y: 80,
+        width: 30,
+        height: 30,
+        button: Button::DeviceScrollUp,
+    });
+    buttons.push(ButtonRect {
+        x: 450,
+        y: 360,
+        width: 30,
+        height: 30,
+        button: Button::DeviceScrollDown,
+    });
+
+    // Device list buttons
+    let start_y: u32 = 110;
+    for i in 0..VISIBLE_DEVICES {
+        let device_idx = state.device_scroll_offset + i;
+        if device_idx >= state.input_devices.len() {
+            break;
+        }
+        buttons.push(ButtonRect {
+            x: 30,
+            y: start_y + (i as u32 * 45),
+            width: 400,
+            height: 35,
+            button: Button::Device(device_idx),
+        });
+    }
 
     buttons
 }
@@ -956,6 +1068,10 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
             state.hotkey_capture = HotkeyCapture::Idle;
             None
         }
+        Button::ConfigureMic => {
+            state.current_page = SetupPage::AudioConfig;
+            None
+        }
         Button::GpuToggle => {
             state.use_gpu = !state.use_gpu;
             None
@@ -992,6 +1108,7 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
                     state.use_gpu,
                     state.cuda_path.clone(),
                     state.cudnn_path.clone(),
+                    state.selected_input_device.clone(),
                 );
                 config.overlay_visible = state.overlay_visible;
                 config.overlay_x = state.overlay_x;
@@ -1082,6 +1199,31 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
             }
             None
         }
+        Button::DeviceScrollUp => {
+            if state.device_scroll_offset > 0 {
+                state.device_scroll_offset -= 1;
+            }
+            None
+        }
+        Button::DeviceScrollDown => {
+            let device_count = state.input_devices.len();
+            let max_offset = device_count.saturating_sub(VISIBLE_DEVICES);
+            if state.device_scroll_offset < max_offset {
+                state.device_scroll_offset += 1;
+            }
+            None
+        }
+        Button::Device(idx) => {
+            if let Some(name) = state.input_devices.get(idx) {
+                if name == DEFAULT_DEVICE_LABEL {
+                    state.selected_input_device = None;
+                } else {
+                    state.selected_input_device = Some(name.clone());
+                }
+                state.status = "Microphone selection updated.".to_string();
+            }
+            None
+        }
         Button::Back => {
             state.current_page = SetupPage::Home;
             state.hotkey_capture = HotkeyCapture::Idle;
@@ -1093,6 +1235,16 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
             } else {
                 state.status = "Select a model to get started.".to_string();
             }
+            None
+        }
+        Button::ConfirmDevice => {
+            if let Ok(mut config) = Config::load() {
+                config.input_device_name = state.selected_input_device.clone();
+                if let Err(e) = config.save() {
+                    state.status = format!("Error saving microphone: {}", e);
+                }
+            }
+            state.current_page = SetupPage::Home;
             None
         }
 
@@ -1192,6 +1344,7 @@ fn render(state: &SetupState, buffer: &mut [u32], width: u32, height: u32) {
         SetupPage::ModelSelection => render_model_page(state, buffer, width, height),
         SetupPage::HotkeyConfig(target) => render_hotkey_page(state, buffer, width, height, *target),
         SetupPage::CudaConfig => render_cuda_page(state, buffer, width, height),
+        SetupPage::AudioConfig => render_audio_page(state, buffer, width, height),
     }
 }
 
@@ -1232,6 +1385,22 @@ fn render_home_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
     let select_bg = if state.hovered_button == Some(Button::SelectModel) { BUTTON_HOVER } else { BUTTON_COLOR };
     draw_rect(buffer, width, 380, y, 90, FIELD_HEIGHT, select_bg);
     draw_text(buffer, width, 400, y + TEXT_OFFSET, "Select", TEXT_COLOR);
+    y += ROW_SPACING;
+
+    // Microphone section
+    draw_text(buffer, width, 30, y, "Microphone:", TEXT_COLOR);
+    y += LABEL_FIELD_GAP;
+    draw_rect(buffer, width, 30, y, 340, FIELD_HEIGHT, FIELD_BG);
+    let device_text = state
+        .selected_input_device
+        .as_deref()
+        .unwrap_or(DEFAULT_DEVICE_LABEL);
+    draw_text(buffer, width, 40, y + TEXT_OFFSET, device_text, TEXT_COLOR);
+
+    // Configure Microphone button
+    let mic_btn_bg = if state.hovered_button == Some(Button::ConfigureMic) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 380, y, 90, FIELD_HEIGHT, mic_btn_bg);
+    draw_text(buffer, width, 392, y + TEXT_OFFSET, "Change", TEXT_COLOR);
     y += ROW_SPACING;
 
     // Push-to-Talk section
@@ -1368,6 +1537,57 @@ fn render_cuda_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
 
     // Status
     draw_text(buffer, width, 30, 380, &state.status, DIM_TEXT);
+}
+
+fn render_audio_page(state: &SetupState, buffer: &mut [u32], width: u32, _height: u32) {
+    // Header
+    draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
+    draw_text(buffer, width, 20, 20, "Microphone Selection", TEXT_COLOR);
+
+    // Back button
+    let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 400, 10, 80, 30, back_bg);
+    draw_text(buffer, width, 420, 20, "Back", TEXT_COLOR);
+
+    // Scroll buttons
+    let up_bg = if state.hovered_button == Some(Button::DeviceScrollUp) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 450, 80, 30, 30, up_bg);
+    draw_text(buffer, width, 460, 88, "^", TEXT_COLOR);
+
+    let down_bg = if state.hovered_button == Some(Button::DeviceScrollDown) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 450, 360, 30, 30, down_bg);
+    draw_text(buffer, width, 460, 368, "v", TEXT_COLOR);
+
+    // Device list
+    let start_y: u32 = 110;
+    for i in 0..VISIBLE_DEVICES {
+        let device_idx = state.device_scroll_offset + i;
+        if device_idx >= state.input_devices.len() {
+            break;
+        }
+        let device_name = &state.input_devices[device_idx];
+        let is_selected = state
+            .selected_input_device
+            .as_deref()
+            .unwrap_or(DEFAULT_DEVICE_LABEL)
+            == device_name.as_str();
+
+        let bg = if state.hovered_button == Some(Button::Device(device_idx)) {
+            BUTTON_HOVER
+        } else if is_selected {
+            SELECTED_COLOR
+        } else {
+            FIELD_BG
+        };
+
+        draw_rect(buffer, width, 30, start_y + (i as u32 * 45), 400, 35, bg);
+        draw_text(buffer, width, 40, start_y + (i as u32 * 45) + 12, device_name, TEXT_COLOR);
+    }
+
+    // Confirm button
+    let confirm_bg = if state.hovered_button == Some(Button::ConfirmDevice) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 300, 440, 150, 35, confirm_bg);
+    draw_text(buffer, width, 330, 450, "Use Selected", TEXT_COLOR);
 }
 
 fn render_model_page(state: &SetupState, buffer: &mut [u32], width: u32, _height: u32) {
@@ -1824,6 +2044,9 @@ mod tests {
             selected_model: None,
             model_scroll_offset: 0,
             selected_backend_id: None,
+            input_devices: vec![DEFAULT_DEVICE_LABEL.to_string()],
+            selected_input_device: None,
+            device_scroll_offset: 0,
             push_to_talk_hotkey: Some("Backquote".to_string()),
             toggle_listening_hotkey: Some("Control+Backquote".to_string()),
             hotkey_capture: HotkeyCapture::Idle,
@@ -1837,6 +2060,9 @@ mod tests {
             status: "Test".to_string(),
             download_progress: None,
             model_downloaded: false,
+            overlay_visible: true,
+            overlay_x: None,
+            overlay_y: None,
             hovered_button: None,
             mouse_pos: (0.0, 0.0),
         };
@@ -1892,6 +2118,7 @@ mod tests {
             SetupPage::HotkeyConfig(HotkeyTarget::PushToTalk),
             SetupPage::HotkeyConfig(HotkeyTarget::ToggleListening),
             SetupPage::CudaConfig,
+            SetupPage::AudioConfig,
         ];
         
         // Verify all pages are distinct

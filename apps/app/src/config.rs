@@ -26,6 +26,8 @@ pub struct Config {
     pub overlay_y: Option<i32>,
     pub hotkey_push_to_talk: String,
     pub hotkey_always_listen: String,
+    #[serde(default)]
+    pub input_device_name: Option<String>,
 }
 
 fn default_backend_id() -> String {
@@ -46,6 +48,7 @@ impl Default for Config {
             overlay_y: None,
             hotkey_push_to_talk: "Backquote".to_string(),
             hotkey_always_listen: "Control+Backquote".to_string(),
+            input_device_name: None,
         }
     }
 }
@@ -476,6 +479,7 @@ impl Config {
         use_gpu: bool,
         cuda_path: Option<PathBuf>,
         cudnn_path: Option<PathBuf>,
+        input_device_name: Option<String>,
     ) -> Self {
         Self {
             backend_id: backend_id.to_string(),
@@ -489,6 +493,7 @@ impl Config {
             overlay_y: None,
             hotkey_push_to_talk: hotkey_push_to_talk.to_string(),
             hotkey_always_listen: hotkey_always_listen.to_string(),
+            input_device_name,
         }
     }
 }
@@ -521,6 +526,7 @@ mod tests {
             true,
             Some(PathBuf::from("/cuda")),
             Some(PathBuf::from("/cudnn")),
+            None,
         );
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -549,6 +555,7 @@ mod tests {
             "Backquote",
             "Control+Backquote",
             false,
+            None,
             None,
             None,
         );
@@ -635,6 +642,7 @@ mod tests {
             true,  // GPU enabled
             Some(PathBuf::from("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0")),
             Some(PathBuf::from("C:/Program Files/NVIDIA/CUDNN/v9.18")),
+            None,
         );
 
         assert!(config.use_gpu);
@@ -659,6 +667,7 @@ mod tests {
             false,  // GPU disabled
             None,
             None,
+            None,
         );
 
         assert!(!config.use_gpu);
@@ -677,6 +686,7 @@ mod tests {
             true,
             Some(PathBuf::from("/cuda/path")),
             Some(PathBuf::from("/cudnn/path")),
+            None,
         );
 
         let json = serde_json::to_string_pretty(&config).unwrap();
