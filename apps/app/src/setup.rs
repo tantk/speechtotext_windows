@@ -425,6 +425,9 @@ pub fn run_setup() -> ! {
             Event::UserEvent(SetupEvent::Exit(_config)) => {
                 *control_flow = ControlFlow::Exit;
             }
+            Event::UserEvent(SetupEvent::ExitWithoutConfig) => {
+                *control_flow = ControlFlow::Exit;
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
@@ -570,8 +573,8 @@ pub fn run_setup() -> ! {
                 for btn in &buttons {
                     if is_inside(state.mouse_pos, btn) {
                         let old_capture = state.hotkey_capture.clone();
-                        if let Some(config) = handle_click(&mut state, btn.button) {
-                            let _ = proxy.send_event(SetupEvent::Exit(config));
+                        if let Some(event) = handle_click(&mut state, btn.button) {
+                            let _ = proxy.send_event(event);
                         }
                         // Request focus when entering hotkey capture mode
                         if old_capture != HotkeyCapture::WaitingForKey && state.hotkey_capture == HotkeyCapture::WaitingForKey {
@@ -609,6 +612,7 @@ pub fn run_setup() -> ! {
 #[derive(Debug, Clone)]
 enum SetupEvent {
     Exit(Config),
+    ExitWithoutConfig,
 }
 
 #[allow(dead_code)]
@@ -1087,7 +1091,7 @@ fn is_inside(pos: (f64, f64), btn: &ButtonRect) -> bool {
         && pos.1 <= (btn.y + btn.height) as f64
 }
 
-fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
+fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
     match button {
         // Home page
         Button::SelectModel => {
@@ -1167,7 +1171,7 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
                 if let Ok(exe) = std::env::current_exe() {
                     let _ = std::process::Command::new(exe).spawn();
                 }
-                Some(config)
+                Some(SetupEvent::Exit(config))
             } else {
                 state.status = "Error: Could not get models directory".to_string();
                 None
@@ -1195,39 +1199,7 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
                 state.status = "Please configure Push-to-Talk.".to_string();
                 return None;
             }
-            if let (Ok(models_dir), Some(unified), Some(backend_id)) = (
-                get_models_dir(),
-                state.selected_unified_model(),
-                state.selected_backend_id.as_ref(),
-            ) {
-                let model_path = models_dir.join(&unified.model.folder_name);
-                let mut config = Config::for_model(
-                    backend_id,
-                    &unified.model.id,
-                    model_path,
-                    state.push_to_talk_hotkey.as_deref().unwrap_or("Backquote"),
-                    state.toggle_listening_hotkey.as_deref().unwrap_or("Control+Backquote"),
-                    state.use_gpu,
-                    state.cuda_path.clone(),
-                    state.cudnn_path.clone(),
-                    state.selected_input_device.clone(),
-                );
-                config.overlay_visible = state.overlay_visible;
-                config.overlay_x = state.overlay_x;
-                config.overlay_y = state.overlay_y;
-                if let Err(e) = config.save() {
-                    state.status = format!("Error saving config: {}", e);
-                    return None;
-                }
-                // Re-launch the app
-                if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe).spawn();
-                }
-                Some(config)
-            } else {
-                state.status = "Error: Could not get models directory".to_string();
-                None
-            }
+            Some(SetupEvent::ExitWithoutConfig)
         }
 
         // Model selection page
