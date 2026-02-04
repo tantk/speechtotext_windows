@@ -28,9 +28,9 @@ set CMAKE_GENERATOR=Visual Studio 17 2022
 REM CUDA paths (for CUDA build)
 if "%BUILD_TYPE%"=="cuda" (
     echo [INFO] Building with CUDA support...
-    set CUDA_PATH=C:\PROGRA~1\NVIDIA~2\CUDA\v13.0
-    set CMAKE_INCLUDE_PATH=C:\PROGRA~1\NVIDIA\CUDNN\v9.18\include\13.1
-    set CMAKE_LIBRARY_PATH=C:\PROGRA~1\NVIDIA\CUDNN\v9.18\lib\13.1\x64
+    set CUDA_PATH=C:/PROGRA~1/NVIDIA~2/CUDA/v13.0
+    set CMAKE_INCLUDE_PATH=C:/PROGRA~1/NVIDIA/CUDNN/v9.18/include/13.1
+    set CMAKE_LIBRARY_PATH=C:/PROGRA~1/NVIDIA/CUDNN/v9.18/lib/13.1/x64
     set CUDA_ARCH_LIST=89
 ) else (
     echo [INFO] Building CPU-only version...
