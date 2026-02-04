@@ -116,6 +116,7 @@ enum Button {
     GpuToggle,
     ConfigureCuda,
     Start,
+    Close,
 
     // Model selection page
     Model(usize),
@@ -737,6 +738,15 @@ fn get_button_rects(state: &SetupState) -> Vec<ButtonRect> {
 fn get_home_buttons(state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
 
+    // Close button in header
+    buttons.push(ButtonRect {
+        x: 450,
+        y: 10,
+        width: 30,
+        height: 30,
+        button: Button::Close,
+    });
+
     // Layout constants - MUST match render_home_page exactly!
     const FIELD_HEIGHT: u32 = 28;
     const ROW_SPACING: u32 = 50;
@@ -829,6 +839,15 @@ fn get_home_buttons(state: &SetupState) -> Vec<ButtonRect> {
 fn get_cuda_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
 
+    // Close button in header
+    buttons.push(ButtonRect {
+        x: 450,
+        y: 10,
+        width: 30,
+        height: 30,
+        button: Button::Close,
+    });
+
     // Back button
     buttons.push(ButtonRect {
         x: 400,
@@ -870,6 +889,15 @@ fn get_cuda_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
 
 fn get_audio_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
+
+    // Close button in header
+    buttons.push(ButtonRect {
+        x: 450,
+        y: 10,
+        width: 30,
+        height: 30,
+        button: Button::Close,
+    });
 
     // Back button
     buttons.push(ButtonRect {
@@ -926,6 +954,15 @@ fn get_audio_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
 
 fn get_model_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
+
+    // Close button in header
+    buttons.push(ButtonRect {
+        x: 450,
+        y: 10,
+        width: 30,
+        height: 30,
+        button: Button::Close,
+    });
 
     // Back button
     buttons.push(ButtonRect {
@@ -994,6 +1031,15 @@ fn get_model_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
 
 fn get_hotkey_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
+
+    // Close button in header
+    buttons.push(ButtonRect {
+        x: 450,
+        y: 10,
+        width: 30,
+        height: 30,
+        button: Button::Close,
+    });
 
     // Back button
     buttons.push(ButtonRect {
@@ -1091,6 +1137,62 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
             }
             if !state.model_downloaded {
                 state.status = "Please download the model first!".to_string();
+                return None;
+            }
+            if let (Ok(models_dir), Some(unified), Some(backend_id)) = (
+                get_models_dir(),
+                state.selected_unified_model(),
+                state.selected_backend_id.as_ref(),
+            ) {
+                let model_path = models_dir.join(&unified.model.folder_name);
+                let mut config = Config::for_model(
+                    backend_id,
+                    &unified.model.id,
+                    model_path,
+                    state.push_to_talk_hotkey.as_deref().unwrap_or("Backquote"),
+                    state.toggle_listening_hotkey.as_deref().unwrap_or("Control+Backquote"),
+                    state.use_gpu,
+                    state.cuda_path.clone(),
+                    state.cudnn_path.clone(),
+                    state.selected_input_device.clone(),
+                );
+                config.overlay_visible = state.overlay_visible;
+                config.overlay_x = state.overlay_x;
+                config.overlay_y = state.overlay_y;
+                if let Err(e) = config.save() {
+                    state.status = format!("Error saving config: {}", e);
+                    return None;
+                }
+                // Re-launch the app
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).spawn();
+                }
+                Some(config)
+            } else {
+                state.status = "Error: Could not get models directory".to_string();
+                None
+            }
+        }
+        Button::Close => {
+            if state.selected_model.is_none() {
+                state.status = "Please select a model first!".to_string();
+                return None;
+            }
+            if state.selected_backend_id.is_none() {
+                state.status = "No backend available for selected model!".to_string();
+                return None;
+            }
+            if !state.model_downloaded {
+                state.status = "Please download the model first!".to_string();
+                return None;
+            }
+            if state
+                .push_to_talk_hotkey
+                .as_ref()
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true)
+            {
+                state.status = "Please configure Push-to-Talk.".to_string();
                 return None;
             }
             if let (Ok(models_dir), Some(unified), Some(backend_id)) = (
@@ -1352,6 +1454,9 @@ fn render_home_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
     // Header
     draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
     draw_text(buffer, width, 20, 20, "Speech-to-Text Setup", TEXT_COLOR);
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
+    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Field dimensions - increased for better visibility
     const FIELD_HEIGHT: u32 = 28;
@@ -1482,6 +1587,9 @@ fn render_cuda_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
     // Header
     draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
     draw_text(buffer, width, 20, 20, "CUDA Configuration", TEXT_COLOR);
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
+    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Back button
     let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
@@ -1543,6 +1651,9 @@ fn render_audio_page(state: &SetupState, buffer: &mut [u32], width: u32, _height
     // Header
     draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
     draw_text(buffer, width, 20, 20, "Microphone Selection", TEXT_COLOR);
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
+    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Back button
     let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
@@ -1594,6 +1705,9 @@ fn render_model_page(state: &SetupState, buffer: &mut [u32], width: u32, _height
     // Header
     draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
     draw_text(buffer, width, 20, 15, "Select Model", TEXT_COLOR);
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
+    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Back button
     let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
@@ -1684,6 +1798,9 @@ fn render_hotkey_page(state: &SetupState, buffer: &mut [u32], width: u32, _heigh
         HotkeyTarget::ToggleListening => "Configure Toggle Listening",
     };
     draw_text(buffer, width, 20, 15, title, TEXT_COLOR);
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
+    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Back button
     let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
