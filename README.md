@@ -12,6 +12,19 @@ cargo build -p app --release
 tools\scripts\build_win.bat
 ```
 
+## Usage
+
+- Run `app.exe`, follow the setup wizard to select a model and configure hotkeys.
+- Push-to-talk (default: `) records while held; release to transcribe.
+- Toggle listen (default: Ctrl+`) listens continuously and finalizes after ~5s of silence.
+- Microphone selection is available in the setup wizard.
+
+## Config & Logs
+
+- Config is stored next to the exe: `config-<exe>.json` (e.g., `config-app.json`).
+- Logs are stored next to the exe: `app-<exe>.log`.
+- Running two copies of the same exe name is blocked; rename the exe to run multiple instances.
+
 ## Structure
 
 - `apps/app` - main Windows GUI application
