@@ -1,17 +1,27 @@
 use crate::tray::AppStatus;
 use anyhow::Result;
+use image::GenericImageView;
 use softbuffer::Surface;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use tao::{
     dpi::{LogicalSize, PhysicalPosition},
     event_loop::EventLoopWindowTarget,
-    window::{Window, WindowBuilder},
+    window::{Icon, Window, WindowBuilder},
 };
 
 // Default overlay dimensions
 const OVERLAY_WIDTH: u32 = 120;
 const OVERLAY_HEIGHT: u32 = 50;
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/mic_gray.png");
+
+fn load_window_icon() -> Option<Icon> {
+    let img = image::load_from_memory(WINDOW_ICON_PNG).ok()?;
+    let img = img.resize_exact(32, 32, image::imageops::FilterType::Lanczos3);
+    let (width, height) = img.dimensions();
+    let rgba = img.to_rgba8().into_raw();
+    Icon::from_rgba(rgba, width, height).ok()
+}
 
 pub struct Overlay {
     window: Rc<Window>,
@@ -33,6 +43,7 @@ impl Overlay {
             .with_inner_size(LogicalSize::new(OVERLAY_WIDTH as f64, OVERLAY_HEIGHT as f64))
             .with_decorations(false)
             .with_always_on_top(true)
+            .with_window_icon(load_window_icon())
             .with_resizable(false)
             .build(event_loop)
             .map_err(|e| anyhow::anyhow!("Failed to create overlay window: {}", e))?;

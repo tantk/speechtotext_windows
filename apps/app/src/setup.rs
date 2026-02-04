@@ -1,6 +1,7 @@
 use crate::backend_loader::{discover_backends, get_backends_dir, BackendManifest, ManifestModel};
 use crate::config::{detect_cuda_path, detect_cudnn_path, get_models_dir, validate_cuda_path, validate_cudnn_path, Config};
 use crate::downloader::{self, DownloadProgress};
+use image::GenericImageView;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -8,10 +9,11 @@ use tao::dpi::LogicalSize;
 use tao::event::{ElementState, Event, MouseButton, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::keyboard::{KeyCode, ModifiersState};
-use tao::window::WindowBuilder;
+use tao::window::{Icon, WindowBuilder};
 
 const WINDOW_WIDTH: u32 = 500;
 const WINDOW_HEIGHT: u32 = 500;
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/mic_gray.png");
 
 // Colors
 const BG_COLOR: u32 = 0xFF1a1a2e;
@@ -135,6 +137,8 @@ const VISIBLE_MODELS: usize = 6;
 
 impl SetupState {
     fn new() -> Self {
+        let existing_config = Config::load().ok();
+
         // Load available backends
         let available_backends: Vec<BackendManifest> = if let Ok(backends_dir) = get_backends_dir() {
             let backend_paths = discover_backends(&backends_dir);
@@ -160,9 +164,16 @@ impl SetupState {
             }
         }
 
-        // Auto-detect CUDA paths
-        let cuda_path = detect_cuda_path();
-        let cudnn_path = detect_cudnn_path();
+        // Load saved GPU settings if available, otherwise auto-detect.
+        let use_gpu = existing_config.as_ref().map(|c| c.use_gpu).unwrap_or(false);
+        let cuda_path = existing_config
+            .as_ref()
+            .and_then(|c| c.cuda_path.clone())
+            .or_else(detect_cuda_path);
+        let cudnn_path = existing_config
+            .as_ref()
+            .and_then(|c| c.cudnn_path.clone())
+            .or_else(detect_cudnn_path);
         let cuda_valid = cuda_path.as_ref().map(|p| validate_cuda_path(p)).unwrap_or(false);
         let cudnn_valid = cudnn_path.as_ref().map(|p| validate_cudnn_path(p)).unwrap_or(false);
 
@@ -173,12 +184,22 @@ impl SetupState {
             selected_model: None,
             model_scroll_offset: 0,
             selected_backend_id: None,
-            push_to_talk_hotkey: Some("Backquote".to_string()),
-            toggle_listening_hotkey: Some("Control+Backquote".to_string()),
+            push_to_talk_hotkey: Some(
+                existing_config
+                    .as_ref()
+                    .map(|c| c.hotkey_push_to_talk.clone())
+                    .unwrap_or_else(|| "Backquote".to_string()),
+            ),
+            toggle_listening_hotkey: Some(
+                existing_config
+                    .as_ref()
+                    .map(|c| c.hotkey_always_listen.clone())
+                    .unwrap_or_else(|| "Control+Backquote".to_string()),
+            ),
             hotkey_capture: HotkeyCapture::Idle,
             captured_key: None,
             current_modifiers: ModifiersState::default(),
-            use_gpu: false,
+            use_gpu,
             cuda_path,
             cudnn_path,
             cuda_valid,
@@ -260,16 +281,26 @@ fn is_unified_model_downloaded(unified: &UnifiedModel) -> bool {
     }
 }
 
+fn load_window_icon() -> Option<Icon> {
+    let img = image::load_from_memory(WINDOW_ICON_PNG).ok()?;
+    let img = img.resize_exact(32, 32, image::imageops::FilterType::Lanczos3);
+    let (width, height) = img.dimensions();
+    let rgba = img.to_rgba8().into_raw();
+    Icon::from_rgba(rgba, width, height).ok()
+}
+
 /// Run the setup wizard. This function never returns - it either:
 /// 1. Spawns a new process with the config and exits, or
 /// 2. User closes the window and exits
 pub fn run_setup() -> ! {
     let event_loop = EventLoopBuilder::<SetupEvent>::with_user_event().build();
+    let window_icon = load_window_icon();
 
     let window = WindowBuilder::new()
         .with_title("Speech-to-Text Setup")
         .with_inner_size(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
         .with_min_inner_size(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+        .with_window_icon(window_icon)
         .with_resizable(true)
         .build(&event_loop)
         .expect("Failed to create setup window");
