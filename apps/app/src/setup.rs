@@ -1,7 +1,7 @@
 use crate::backend_loader::{discover_backends, get_backends_dir, BackendManifest, ManifestModel};
 use crate::config::{detect_cuda_path, detect_cudnn_path, get_models_dir, validate_cuda_path, validate_cudnn_path, Config};
 use crate::downloader::{self, DownloadProgress};
-use cpal::traits::HostTrait;
+use cpal::traits::{DeviceTrait, HostTrait};
 use image::GenericImageView;
 use std::num::NonZeroU32;
 use std::rc::Rc;
