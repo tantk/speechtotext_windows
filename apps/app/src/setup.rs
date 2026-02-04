@@ -1140,6 +1140,19 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<Config> {
             if let SetupPage::HotkeyConfig(target) = state.current_page {
                 state.set_hotkey(target, state.captured_key.clone());
             }
+            if let Ok(mut config) = Config::load() {
+                config.hotkey_push_to_talk = state
+                    .push_to_talk_hotkey
+                    .clone()
+                    .unwrap_or_else(|| "Backquote".to_string());
+                config.hotkey_always_listen = state
+                    .toggle_listening_hotkey
+                    .clone()
+                    .unwrap_or_else(|| "Control+Backquote".to_string());
+                if let Err(e) = config.save() {
+                    state.status = format!("Error saving hotkeys: {}", e);
+                }
+            }
             state.current_page = SetupPage::Home;
             state.hotkey_capture = HotkeyCapture::Idle;
             // Update status
