@@ -89,10 +89,7 @@ fn acquire_instance_lock() -> Result<Option<InstanceLock>> {
     wide.push(0);
 
     unsafe {
-        let handle = CreateMutexW(None, false, PCWSTR(wide.as_ptr()));
-        if handle.0 == 0 {
-            return Err(anyhow::anyhow!("Failed to create instance lock"));
-        }
+        let handle = CreateMutexW(None, false, PCWSTR(wide.as_ptr()))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return Ok(None);
         }
