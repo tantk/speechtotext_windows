@@ -15,9 +15,14 @@ tools\scripts\build_win.bat
 ## Usage
 
 - Run `app.exe`, follow the setup wizard to select a model and configure hotkeys.
-- Push-to-talk (default: `) records while held; release to transcribe.
-- Toggle listen (default: Ctrl+`) listens continuously and finalizes after ~5s of silence.
-- Microphone selection is available in the setup wizard.
+- **Push-to-talk** (default: `` ` ``) records while held; release to transcribe.
+- **Toggle listen** (default: `` Ctrl+` ``) listens continuously using voice activity detection:
+  - Overlay turns **green** when listening for speech
+  - Overlay turns **red** when speech is detected and recording
+  - Overlay turns **yellow** during transcription processing
+  - Silence timeout is configurable (0.1–5 seconds, default 2s)
+- Microphone selection and silence timeout are adjustable in the setup wizard.
+- Right-click the overlay or system tray icon for the context menu.
 
 ## Config & Logs
 

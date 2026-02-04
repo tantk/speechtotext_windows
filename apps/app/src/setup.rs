@@ -63,6 +63,9 @@ enum HotkeyCapture {
 struct SetupState {
     current_page: SetupPage,
 
+    // Whether we're launched from settings (app already running)
+    from_settings: bool,
+
     // Backend info (for looking up DLL paths, etc.)
     available_backends: Vec<BackendManifest>,
 
@@ -84,6 +87,9 @@ struct SetupState {
     hotkey_capture: HotkeyCapture,
     captured_key: Option<String>,
     current_modifiers: ModifiersState,
+
+    // Always-listen settings
+    silence_timeout_ms: u64,
 
     // GPU/CUDA settings
     use_gpu: bool,
@@ -131,6 +137,10 @@ enum Button {
     ConfirmHotkey,
     ClearHotkey,
 
+    // Toggle listen config (silence timeout)
+    SilenceTimeoutDecrease,
+    SilenceTimeoutIncrease,
+
     // CUDA config page
     DetectCuda,
     BrowseCuda,
@@ -156,7 +166,7 @@ const VISIBLE_DEVICES: usize = 6;
 const DEFAULT_DEVICE_LABEL: &str = "<Default device>";
 
 impl SetupState {
-    fn new() -> Self {
+    fn new(from_settings: bool) -> Self {
         let existing_config = Config::load().ok();
 
         // Load audio input devices
@@ -244,6 +254,7 @@ impl SetupState {
 
         Self {
             current_page: SetupPage::Home,
+            from_settings,
             available_backends,
             all_models,
             selected_model,
@@ -267,6 +278,10 @@ impl SetupState {
             hotkey_capture: HotkeyCapture::Idle,
             captured_key: None,
             current_modifiers: ModifiersState::default(),
+            silence_timeout_ms: existing_config
+                .as_ref()
+                .map(|c| c.silence_timeout_ms)
+                .unwrap_or(2000),
             use_gpu,
             cuda_path,
             cudnn_path,
@@ -363,10 +378,21 @@ fn load_window_icon() -> Option<Icon> {
     Icon::from_rgba(rgba, width, height).ok()
 }
 
-/// Run the setup wizard. This function never returns - it either:
-/// 1. Spawns a new process with the config and exits, or
-/// 2. User closes the window and exits
+/// Run the setup wizard for initial setup (spawns new process on completion)
 pub fn run_setup() -> ! {
+    run_setup_inner(false)
+}
+
+/// Run the setup wizard from settings menu (just exits on completion, no new process)
+pub fn run_setup_from_settings() -> ! {
+    run_setup_inner(true)
+}
+
+/// Run the setup wizard. This function never returns - it either:
+/// 1. Spawns a new process with the config and exits (if from_settings is false), or
+/// 2. Just exits (if from_settings is true, since app is already running), or
+/// 3. User closes the window and exits
+fn run_setup_inner(from_settings: bool) -> ! {
     let event_loop = EventLoopBuilder::<SetupEvent>::with_user_event().build();
     let window_icon = load_window_icon();
 
@@ -385,7 +411,7 @@ pub fn run_setup() -> ! {
     let mut surface =
         softbuffer::Surface::new(&context, window.clone()).expect("Failed to create softbuffer surface");
 
-    let mut state = SetupState::new();
+    let mut state = SetupState::new(from_settings);
 
     let proxy = event_loop.create_proxy();
 
@@ -733,7 +759,7 @@ fn get_button_rects(state: &SetupState) -> Vec<ButtonRect> {
     match &state.current_page {
         SetupPage::Home => get_home_buttons(state),
         SetupPage::ModelSelection => get_model_page_buttons(state),
-        SetupPage::HotkeyConfig(_) => get_hotkey_page_buttons(state),
+        SetupPage::HotkeyConfig(target) => get_hotkey_page_buttons(state, *target),
         SetupPage::CudaConfig => get_cuda_page_buttons(state),
         SetupPage::AudioConfig => get_audio_page_buttons(state),
     }
@@ -744,9 +770,9 @@ fn get_home_buttons(state: &SetupState) -> Vec<ButtonRect> {
 
     // Close button in header
     buttons.push(ButtonRect {
-        x: 450,
+        x: 420,
         y: 10,
-        width: 30,
+        width: 60,
         height: 30,
         button: Button::Close,
     });
@@ -843,12 +869,12 @@ fn get_home_buttons(state: &SetupState) -> Vec<ButtonRect> {
 fn get_cuda_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
 
-    // Close button in header
+    // Close button at bottom (same position as Start button on home page)
     buttons.push(ButtonRect {
-        x: 450,
-        y: 10,
-        width: 30,
-        height: 30,
+        x: 175,
+        y: 440,
+        width: 150,
+        height: 45,
         button: Button::Close,
     });
 
@@ -894,12 +920,12 @@ fn get_cuda_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
 fn get_audio_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
 
-    // Close button in header
+    // Close button at bottom left
     buttons.push(ButtonRect {
-        x: 450,
-        y: 10,
-        width: 30,
-        height: 30,
+        x: 50,
+        y: 440,
+        width: 150,
+        height: 45,
         button: Button::Close,
     });
 
@@ -959,12 +985,12 @@ fn get_audio_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
 fn get_model_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
 
-    // Close button in header
+    // Close button at bottom
     buttons.push(ButtonRect {
-        x: 450,
-        y: 10,
-        width: 30,
-        height: 30,
+        x: 175,
+        y: 440,
+        width: 150,
+        height: 45,
         button: Button::Close,
     });
 
@@ -1033,15 +1059,15 @@ fn get_model_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
     buttons
 }
 
-fn get_hotkey_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
+fn get_hotkey_page_buttons(state: &SetupState, target: HotkeyTarget) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
 
-    // Close button in header
+    // Close button at bottom
     buttons.push(ButtonRect {
-        x: 450,
-        y: 10,
-        width: 30,
-        height: 30,
+        x: 175,
+        y: 440,
+        width: 150,
+        height: 45,
         button: Button::Close,
     });
 
@@ -1080,6 +1106,28 @@ fn get_hotkey_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
         height: 35,
         button: Button::ClearHotkey,
     });
+
+    // Silence timeout controls (only for Toggle Listen)
+    if target == HotkeyTarget::ToggleListening {
+        // Decrease button (-)
+        buttons.push(ButtonRect {
+            x: 150,
+            y: 365,
+            width: 40,
+            height: 35,
+            button: Button::SilenceTimeoutDecrease,
+        });
+
+        // Increase button (+)
+        buttons.push(ButtonRect {
+            x: 310,
+            y: 365,
+            width: 40,
+            height: 35,
+            button: Button::SilenceTimeoutIncrease,
+        });
+    }
+    let _ = state; // silence unused warning
 
     buttons
 }
@@ -1159,6 +1207,7 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
                     state.cuda_path.clone(),
                     state.cudnn_path.clone(),
                     state.selected_input_device.clone(),
+                    state.silence_timeout_ms,
                 );
                 config.overlay_visible = state.overlay_visible;
                 config.overlay_x = state.overlay_x;
@@ -1167,39 +1216,40 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
                     state.status = format!("Error saving config: {}", e);
                     return None;
                 }
-                // Re-launch the app
-                if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe).spawn();
+                if state.from_settings {
+                    // Just exit - the main app is still running
+                    // User needs to restart the app to apply changes
+                    Some(SetupEvent::ExitWithoutConfig)
+                } else {
+                    // Initial setup - launch the app
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe).spawn();
+                    }
+                    Some(SetupEvent::Exit(config))
                 }
-                Some(SetupEvent::Exit(config))
             } else {
                 state.status = "Error: Could not get models directory".to_string();
                 None
             }
         }
         Button::Close => {
-            if state.selected_model.is_none() {
-                state.status = "Please select a model first!".to_string();
-                return None;
+            // On sub-pages, X button goes back to home; on home page, it exits
+            if state.current_page != SetupPage::Home {
+                state.current_page = SetupPage::Home;
+                state.hotkey_capture = HotkeyCapture::Idle;
+                // Update status for home page
+                if state.selected_model.is_some() && state.model_downloaded {
+                    state.status = "Ready! Click Start to begin.".to_string();
+                } else if state.selected_model.is_some() {
+                    state.status = "Download the model, then click Start.".to_string();
+                } else {
+                    state.status = "Select a model to get started.".to_string();
+                }
+                None
+            } else {
+                // On home page, just exit without config
+                Some(SetupEvent::ExitWithoutConfig)
             }
-            if state.selected_backend_id.is_none() {
-                state.status = "No backend available for selected model!".to_string();
-                return None;
-            }
-            if !state.model_downloaded {
-                state.status = "Please download the model first!".to_string();
-                return None;
-            }
-            if state
-                .push_to_talk_hotkey
-                .as_ref()
-                .map(|s| s.trim().is_empty())
-                .unwrap_or(true)
-            {
-                state.status = "Please configure Push-to-Talk.".to_string();
-                return None;
-            }
-            Some(SetupEvent::ExitWithoutConfig)
         }
 
         // Model selection page
@@ -1388,6 +1438,7 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
                     .toggle_listening_hotkey
                     .clone()
                     .unwrap_or_else(|| "Control+Backquote".to_string());
+                config.silence_timeout_ms = state.silence_timeout_ms;
                 if let Err(e) = config.save() {
                     state.status = format!("Error saving hotkeys: {}", e);
                 }
@@ -1402,6 +1453,20 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
         }
         Button::ClearHotkey => {
             state.captured_key = None;
+            None
+        }
+        Button::SilenceTimeoutDecrease => {
+            // Decrease by 100ms (0.1s), minimum 100ms (0.1s)
+            if state.silence_timeout_ms > 100 {
+                state.silence_timeout_ms = state.silence_timeout_ms.saturating_sub(100);
+            }
+            None
+        }
+        Button::SilenceTimeoutIncrease => {
+            // Increase by 100ms (0.1s), maximum 5000ms (5 seconds)
+            if state.silence_timeout_ms < 5000 {
+                state.silence_timeout_ms = state.silence_timeout_ms.saturating_add(100);
+            }
             None
         }
     }
@@ -1427,8 +1492,8 @@ fn render_home_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
     draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
     draw_text(buffer, width, 20, 20, "Speech-to-Text Setup", TEXT_COLOR);
     let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
-    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
-    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
+    draw_rect(buffer, width, 420, 10, 60, 30, close_bg);
+    draw_text(buffer, width, 432, 20, "Close", TEXT_COLOR);
 
     // Field dimensions - increased for better visibility
     const FIELD_HEIGHT: u32 = 28;
@@ -1551,7 +1616,8 @@ fn render_home_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
         0xFF333355
     };
     draw_rect(buffer, width, 175, 440, 150, 45, start_bg);
-    draw_text(buffer, width, 222, 458, "Start", TEXT_COLOR);
+    let start_label = if state.from_settings { "Save" } else { "Start" };
+    draw_text(buffer, width, 222, 458, start_label, TEXT_COLOR);
 }
 
 
@@ -1559,14 +1625,16 @@ fn render_cuda_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
     // Header
     draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
     draw_text(buffer, width, 20, 20, "CUDA Configuration", TEXT_COLOR);
-    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
-    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
-    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Back button
     let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
     draw_rect(buffer, width, 400, 10, 80, 30, back_bg);
     draw_text(buffer, width, 420, 20, "Back", TEXT_COLOR);
+
+    // Close button at bottom
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 175, 440, 150, 45, close_bg);
+    draw_text(buffer, width, 222, 458, "Close", TEXT_COLOR);
 
     // CUDA path
     draw_text(buffer, width, 30, 70, "CUDA Toolkit Path:", TEXT_COLOR);
@@ -1623,14 +1691,16 @@ fn render_audio_page(state: &SetupState, buffer: &mut [u32], width: u32, _height
     // Header
     draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
     draw_text(buffer, width, 20, 20, "Microphone Selection", TEXT_COLOR);
-    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
-    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
-    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Back button
     let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
     draw_rect(buffer, width, 400, 10, 80, 30, back_bg);
     draw_text(buffer, width, 420, 20, "Back", TEXT_COLOR);
+
+    // Close button at bottom left
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 50, 440, 150, 45, close_bg);
+    draw_text(buffer, width, 100, 458, "Close", TEXT_COLOR);
 
     // Scroll buttons
     let up_bg = if state.hovered_button == Some(Button::DeviceScrollUp) { BUTTON_HOVER } else { BUTTON_COLOR };
@@ -1677,14 +1747,16 @@ fn render_model_page(state: &SetupState, buffer: &mut [u32], width: u32, _height
     // Header
     draw_rect(buffer, width, 0, 0, width, 50, HEADER_BG);
     draw_text(buffer, width, 20, 15, "Select Model", TEXT_COLOR);
-    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
-    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
-    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Back button
     let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
     draw_rect(buffer, width, 400, 10, 80, 30, back_bg);
     draw_text(buffer, width, 420, 18, "Back", TEXT_COLOR);
+
+    // Close button at bottom
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 175, 440, 150, 45, close_bg);
+    draw_text(buffer, width, 222, 458, "Close", TEXT_COLOR);
 
     if state.all_models.is_empty() {
         draw_text(buffer, width, 30, 100, "No models found!", TEXT_COLOR);
@@ -1770,14 +1842,16 @@ fn render_hotkey_page(state: &SetupState, buffer: &mut [u32], width: u32, _heigh
         HotkeyTarget::ToggleListening => "Configure Toggle Listening",
     };
     draw_text(buffer, width, 20, 15, title, TEXT_COLOR);
-    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
-    draw_rect(buffer, width, 450, 10, 30, 30, close_bg);
-    draw_text(buffer, width, 460, 20, "X", TEXT_COLOR);
 
     // Back button
     let back_bg = if state.hovered_button == Some(Button::Back) { BUTTON_HOVER } else { BUTTON_COLOR };
     draw_rect(buffer, width, 400, 10, 80, 30, back_bg);
     draw_text(buffer, width, 420, 18, "Back", TEXT_COLOR);
+
+    // Close button at bottom
+    let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
+    draw_rect(buffer, width, 175, 440, 150, 45, close_bg);
+    draw_text(buffer, width, 222, 458, "Close", TEXT_COLOR);
 
     // Current hotkey display
     draw_text(buffer, width, 150, 80, "Current Hotkey:", TEXT_COLOR);
@@ -1817,8 +1891,30 @@ fn render_hotkey_page(state: &SetupState, buffer: &mut [u32], width: u32, _heigh
     draw_text(buffer, width, 280, 270, "Clear", TEXT_COLOR);
 
     // Instructions
-    draw_text(buffer, width, 100, 320, "Click 'Set Hotkey' then press any key", DIM_TEXT);
-    draw_text(buffer, width, 100, 340, "Supports modifiers: Ctrl, Alt, Shift", DIM_TEXT);
+    draw_text(buffer, width, 100, 310, "Click 'Set Hotkey' then press any key", DIM_TEXT);
+
+    // Silence timeout control (only for Toggle Listening)
+    if target == HotkeyTarget::ToggleListening {
+        draw_text(buffer, width, 100, 345, "Silence Timeout:", TEXT_COLOR);
+
+        // Decrease button (-)
+        let dec_bg = if state.hovered_button == Some(Button::SilenceTimeoutDecrease) { BUTTON_HOVER } else { BUTTON_COLOR };
+        draw_rect(buffer, width, 150, 365, 40, 35, dec_bg);
+        draw_text(buffer, width, 165, 375, "-", TEXT_COLOR);
+
+        // Value display
+        draw_rect(buffer, width, 200, 365, 100, 35, FIELD_BG);
+        let timeout_secs = state.silence_timeout_ms as f64 / 1000.0;
+        let timeout_text = format!("{:.1}s", timeout_secs);
+        draw_text(buffer, width, 230, 375, &timeout_text, TEXT_COLOR);
+
+        // Increase button (+)
+        let inc_bg = if state.hovered_button == Some(Button::SilenceTimeoutIncrease) { BUTTON_HOVER } else { BUTTON_COLOR };
+        draw_rect(buffer, width, 310, 365, 40, 35, inc_bg);
+        draw_text(buffer, width, 322, 375, "+", TEXT_COLOR);
+
+        draw_text(buffer, width, 100, 410, "Time of silence before transcription", DIM_TEXT);
+    }
 }
 
 fn format_hotkey_display(key: &str) -> String {
@@ -2128,6 +2224,7 @@ mod tests {
         // Create a mock state for button rect generation
         let state = SetupState {
             current_page: SetupPage::Home,
+            from_settings: false,
             available_backends: vec![],
             all_models: vec![],
             selected_model: None,
@@ -2141,6 +2238,7 @@ mod tests {
             hotkey_capture: HotkeyCapture::Idle,
             captured_key: None,
             current_modifiers: ModifiersState::default(),
+            silence_timeout_ms: 2000,
             use_gpu: false,
             cuda_path: None,
             cudnn_path: None,

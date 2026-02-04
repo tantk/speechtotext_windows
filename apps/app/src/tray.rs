@@ -17,6 +17,7 @@ pub enum AppStatus {
     Recording,
     Processing,
     AlwaysListening,
+    AlwaysListeningRecording, // Active speech detected in always-listen mode
 }
 
 pub struct TrayManager {
@@ -76,6 +77,9 @@ impl TrayManager {
             AppStatus::Processing => (&self.icons.processing, "Speech to Text - Processing..."),
             AppStatus::AlwaysListening => {
                 (&self.icons.always_listening, "Speech to Text - Listening...")
+            }
+            AppStatus::AlwaysListeningRecording => {
+                (&self.icons.recording, "Speech to Text - Speaking...")
             }
         };
 

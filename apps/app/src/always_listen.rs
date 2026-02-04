@@ -65,7 +65,7 @@ impl Default for AlwaysListenConfig {
         Self {
             pre_roll_duration_ms: 500,     // 500ms pre-roll
             min_speech_duration_ms: 300,   // 300ms min speech
-            post_silence_duration_ms: 5000, // 5s silence = end
+            post_silence_duration_ms: 2000, // 2s silence = end
             vad_threshold: 0.015,          // Energy threshold (tuned for typical mics)
             max_utterance_seconds: 30.0,   // Max 30s utterance
             cooldown_ms: 200,              // 200ms between utterances
@@ -545,7 +545,9 @@ fn finalize_recording(
         error!("Failed to send audio data for transcription");
     }
 
-    *state.lock() = AlwaysListenState::Processing;
+    // Return to listening state immediately - transcription happens async
+    // This allows detecting the next utterance while previous one is being transcribed
+    *state.lock() = AlwaysListenState::Listening;
 
     // Reset for next utterance
     buffer_manager.reset();

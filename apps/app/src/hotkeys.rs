@@ -1,7 +1,7 @@
 use anyhow::Result;
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyEvent, GlobalHotKeyManager,
+    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
 };
 
 pub struct HotkeyManager {
@@ -15,8 +15,9 @@ pub struct HotkeyManager {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyAction {
-    PushToTalk,
-    AlwaysListen,
+    PushToTalkPressed,
+    PushToTalkReleased,
+    AlwaysListenToggle,
 }
 
 impl HotkeyManager {
@@ -202,15 +203,25 @@ fn format_hotkey_display(s: &str) -> String {
 }
 
 /// Check hotkey event given the IDs
+/// Push-to-talk: responds to both press and release
+/// Always-listen: only responds to press (toggle)
 pub fn check_hotkey_event(
     event: &GlobalHotKeyEvent,
     push_to_talk_id: u32,
     always_listen_id: u32,
 ) -> Option<HotkeyAction> {
     if event.id == push_to_talk_id {
-        Some(HotkeyAction::PushToTalk)
+        match event.state {
+            HotKeyState::Pressed => Some(HotkeyAction::PushToTalkPressed),
+            HotKeyState::Released => Some(HotkeyAction::PushToTalkReleased),
+        }
     } else if event.id == always_listen_id {
-        Some(HotkeyAction::AlwaysListen)
+        // Only toggle on press, ignore release
+        if event.state == HotKeyState::Pressed {
+            Some(HotkeyAction::AlwaysListenToggle)
+        } else {
+            None
+        }
     } else {
         None
     }

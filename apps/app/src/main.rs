@@ -28,11 +28,18 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tray::AppStatus;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::CreateMutexW;
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreatePopupMenu, AppendMenuW, TrackPopupMenu, DestroyMenu,
+    MF_STRING, TPM_RIGHTALIGN, TPM_BOTTOMALIGN, TPM_RETURNCMD,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppMode {
@@ -97,7 +104,64 @@ fn acquire_instance_lock() -> Result<Option<InstanceLock>> {
     }
 }
 
+// Context menu item IDs for overlay right-click menu
+#[cfg(target_os = "windows")]
+const MENU_SHOW_OVERLAY: u32 = 1;
+#[cfg(target_os = "windows")]
+const MENU_SETTINGS: u32 = 2;
+#[cfg(target_os = "windows")]
+const MENU_EXIT: u32 = 3;
+
+/// Show a context menu at the current cursor position and return the selected item ID
+#[cfg(target_os = "windows")]
+fn show_overlay_context_menu(hwnd: HWND) -> Option<u32> {
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+
+        let show_overlay_text: Vec<u16> = "Show/Hide Overlay\0".encode_utf16().collect();
+        let settings_text: Vec<u16> = "Settings\0".encode_utf16().collect();
+        let exit_text: Vec<u16> = "Exit\0".encode_utf16().collect();
+
+        let _ = AppendMenuW(menu, MF_STRING, MENU_SHOW_OVERLAY as usize, PCWSTR(show_overlay_text.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS as usize, PCWSTR(settings_text.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING, MENU_EXIT as usize, PCWSTR(exit_text.as_ptr()));
+
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD,
+            pt.x,
+            pt.y,
+            0,
+            hwnd,
+            None,
+        );
+
+        let _ = DestroyMenu(menu);
+
+        if cmd.0 != 0 {
+            Some(cmd.0 as u32)
+        } else {
+            None
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    // Check for --setup-only flag (used when opening settings from running app)
+    // This runs just the setup wizard without acquiring the mutex
+    if std::env::args().any(|arg| arg == "--setup-only") {
+        setup::run_setup_from_settings();
+    }
+
+    // Check for --delay-start flag (used when restarting from settings)
+    // This gives the previous process time to exit and release the mutex
+    if std::env::args().any(|arg| arg == "--delay-start") {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
     #[cfg(target_os = "windows")]
     let _instance_lock = {
         let lock = acquire_instance_lock()?;
@@ -482,24 +546,39 @@ fn run_app(mut config: Config) -> Result<()> {
     let always_listen_running = Arc::clone(&running);
     let always_listen_active_thread = Arc::clone(&always_listen_active);
     let al_proxy = proxy.clone();
-    
+    let silence_timeout_ms = config.silence_timeout_ms;
+
     std::thread::spawn(move || {
         use always_listen::{AlwaysListenConfig, AlwaysListenController, AlwaysListenState};
-        
-        let config = AlwaysListenConfig::default();
-        let controller = AlwaysListenController::new(config, audio_rx, result_tx);
-        
+
+        let mut al_config = AlwaysListenConfig::default();
+        al_config.post_silence_duration_ms = silence_timeout_ms;
+        let controller = AlwaysListenController::new(al_config, audio_rx, result_tx);
+
+        // Track previous state to detect changes
+        let mut last_was_recording = false;
+
         while always_listen_running.load(Ordering::SeqCst) {
             // Only process when always-listen is active
             if always_listen_active_thread.load(Ordering::SeqCst) {
                 if controller.state() == AlwaysListenState::Paused {
                     let _ = controller.start();
                 }
-                
+
+                // Check for state changes (recording vs listening)
+                let current_state = controller.state();
+                let is_recording = matches!(current_state, AlwaysListenState::Recording { .. });
+
+                if is_recording != last_was_recording {
+                    // State changed - notify main thread
+                    let _ = al_proxy.send_event(UserEvent::AlwaysListenStateChange(is_recording));
+                    last_was_recording = is_recording;
+                }
+
                 // Check for transcription results
                 if let Some(audio_data) = controller.try_recv_result() {
                     debug!("Received {} samples from always-listen", audio_data.len());
-                    
+
                     // Send event to main thread for transcription
                     let _ = al_proxy.send_event(UserEvent::AlwaysListenAudio(audio_data));
                 }
@@ -507,11 +586,12 @@ fn run_app(mut config: Config) -> Result<()> {
                 if controller.state() != AlwaysListenState::Paused {
                     let _ = controller.stop();
                 }
+                last_was_recording = false;
             }
-            
+
             std::thread::sleep(Duration::from_millis(10));
         }
-        
+
         let _ = controller.stop();
     });
 
@@ -578,10 +658,10 @@ fn run_app(mut config: Config) -> Result<()> {
                 UserEvent::Hotkey(action) => {
                     let mut mode = state.lock();
                     match action {
-                        HotkeyAction::PushToTalk => match *mode {
+                        HotkeyAction::PushToTalkPressed => match *mode {
                             AppMode::Idle => {
-                                // Start recording
-                                info!("RECORDING... (press hotkey to stop)");
+                                // Start recording (hold to record)
+                                info!("RECORDING... (release to stop)");
                                 if let Err(e) = audio_capture.lock().start_recording() {
                                     error!("Failed to start recording: {}", e);
                                     return;
@@ -590,9 +670,28 @@ fn run_app(mut config: Config) -> Result<()> {
                                 tray_manager.set_status(AppStatus::Recording);
                                 overlay.set_status(AppStatus::Recording);
                             }
-                            AppMode::Recording => {
+                            AppMode::AlwaysListening => {
+                                // In always-listening mode, push-to-talk temporarily pauses it
+                                info!("Push-to-talk activated while in always-listen mode - pausing");
+                                always_listen_active.store(false, Ordering::SeqCst);
+
+                                // Start push-to-talk recording
+                                if let Err(e) = audio_capture.lock().start_recording() {
+                                    error!("Failed to start recording: {}", e);
+                                    return;
+                                }
+                                *mode = AppMode::Recording;
+                                tray_manager.set_status(AppStatus::Recording);
+                                overlay.set_status(AppStatus::Recording);
+                            }
+                            _ => {
+                                // Already recording or processing, ignore
+                            }
+                        },
+                        HotkeyAction::PushToTalkReleased => {
+                            if *mode == AppMode::Recording {
                                 // Stop recording and transcribe
-                                info!("Stopped. Processing...");
+                                info!("Released. Processing...");
                                 let audio_data = audio_capture.lock().stop_recording();
 
                                 *mode = AppMode::Processing;
@@ -608,25 +707,8 @@ fn run_app(mut config: Config) -> Result<()> {
                                     AppStatus::Idle,
                                 );
                             }
-                            AppMode::Processing => {
-                                info!("Still processing, please wait...");
-                            }
-                            AppMode::AlwaysListening => {
-                                // In always-listening mode, push-to-talk temporarily pauses it
-                                info!("Push-to-talk activated while in always-listen mode - pausing");
-                                always_listen_active.store(false, Ordering::SeqCst);
-                                
-                                // Start push-to-talk recording
-                                if let Err(e) = audio_capture.lock().start_recording() {
-                                    error!("Failed to start recording: {}", e);
-                                    return;
-                                }
-                                *mode = AppMode::Recording;
-                                tray_manager.set_status(AppStatus::Recording);
-                                overlay.set_status(AppStatus::Recording);
-                            }
-                        },
-                        HotkeyAction::AlwaysListen => {
+                        }
+                        HotkeyAction::AlwaysListenToggle => {
                             // Toggle always-listen mode
                             match *mode {
                                 AppMode::Idle => {
@@ -681,11 +763,24 @@ fn run_app(mut config: Config) -> Result<()> {
                         AppStatus::AlwaysListening,
                     );
                 }
+                UserEvent::AlwaysListenStateChange(is_recording) => {
+                    // Update UI when always-listen starts/stops recording speech
+                    let mode = *state.lock();
+                    if mode == AppMode::AlwaysListening {
+                        if is_recording {
+                            tray_manager.set_status(AppStatus::AlwaysListeningRecording);
+                            overlay.set_status(AppStatus::AlwaysListeningRecording);
+                        } else {
+                            tray_manager.set_status(AppStatus::AlwaysListening);
+                            overlay.set_status(AppStatus::AlwaysListening);
+                        }
+                    }
+                }
                 UserEvent::Menu(menu_id) => {
                     if menu_id == show_overlay_id {
                         overlay.toggle_visibility();
                     } else if menu_id == settings_id {
-                        // Save state and launch setup wizard
+                        // Save current state before opening settings
                         info!("Opening settings...");
                         let (x, y) = overlay.get_position();
                         config.overlay_x = Some(x);
@@ -693,14 +788,12 @@ fn run_app(mut config: Config) -> Result<()> {
                         if let Err(e) = config.save() {
                             error!("Failed to save config: {}", e);
                         }
-                        // Stop always-listen before launching setup
-                        always_listen_active.store(false, Ordering::SeqCst);
-                        always_listen_stream_running.store(false, Ordering::SeqCst);
-                        if let Some(ref stream) = always_listen_stream {
-                            let _ = stream.pause();
+                        // Launch setup wizard in a separate process so the app keeps running
+                        if let Ok(exe) = std::env::current_exe() {
+                            let _ = std::process::Command::new(exe)
+                                .arg("--setup-only")
+                                .spawn();
                         }
-                        // Launch setup wizard (will restart app - this never returns)
-                        setup::run_setup();
                     } else if menu_id == exit_id {
                         info!("Exiting...");
                         // Stop always-listen
@@ -760,6 +853,65 @@ fn run_app(mut config: Config) -> Result<()> {
                     overlay.start_drag();
                 }
             }
+            Event::WindowEvent {
+                event:
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Right,
+                        ..
+                    },
+                window_id,
+                ..
+            } => {
+                if window_id == overlay.window_id() {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let hwnd = HWND(overlay.hwnd() as *mut std::ffi::c_void);
+                        if let Some(cmd) = show_overlay_context_menu(hwnd) {
+                            match cmd {
+                                MENU_SHOW_OVERLAY => {
+                                    overlay.toggle_visibility();
+                                }
+                                MENU_SETTINGS => {
+                                    // Save current state before opening settings
+                                    info!("Opening settings from overlay...");
+                                    let (x, y) = overlay.get_position();
+                                    config.overlay_x = Some(x);
+                                    config.overlay_y = Some(y);
+                                    if let Err(e) = config.save() {
+                                        error!("Failed to save config: {}", e);
+                                    }
+                                    // Launch setup wizard in a separate process
+                                    if let Ok(exe) = std::env::current_exe() {
+                                        let _ = std::process::Command::new(exe)
+                                            .arg("--setup-only")
+                                            .spawn();
+                                    }
+                                }
+                                MENU_EXIT => {
+                                    info!("Exiting from overlay menu...");
+                                    // Stop always-listen
+                                    always_listen_active.store(false, Ordering::SeqCst);
+                                    always_listen_stream_running.store(false, Ordering::SeqCst);
+                                    if let Some(ref stream) = always_listen_stream {
+                                        let _ = stream.pause();
+                                    }
+                                    // Save overlay position before exit
+                                    let (x, y) = overlay.get_position();
+                                    config.overlay_x = Some(x);
+                                    config.overlay_y = Some(y);
+                                    if let Err(e) = config.save() {
+                                        error!("Failed to save config: {}", e);
+                                    }
+                                    running.store(false, Ordering::SeqCst);
+                                    *control_flow = ControlFlow::Exit;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
             Event::RedrawRequested(window_id) => {
                 if window_id == overlay.window_id() {
                     overlay.handle_redraw();
@@ -776,4 +928,5 @@ enum UserEvent {
     Menu(tray_icon::menu::MenuId),
     TranscriptionComplete(AppStatus),
     AlwaysListenAudio(Vec<f32>),
+    AlwaysListenStateChange(bool), // true = recording, false = listening
 }

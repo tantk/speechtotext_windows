@@ -9,6 +9,8 @@ use tao::{
     event_loop::EventLoopWindowTarget,
     window::{Icon, Window, WindowBuilder},
 };
+#[cfg(target_os = "windows")]
+use tao::platform::windows::WindowExtWindows;
 
 // Default overlay dimensions
 const OVERLAY_WIDTH: u32 = 120;
@@ -120,6 +122,7 @@ impl Overlay {
             AppStatus::Recording => "🎤 LISTENING",
             AppStatus::Processing => "Processing...",
             AppStatus::AlwaysListening => "Always On",
+            AppStatus::AlwaysListeningRecording => "🎤 SPEAKING",
         };
         self.window.set_title(title);
 
@@ -128,6 +131,12 @@ impl Overlay {
 
     pub fn window_id(&self) -> tao::window::WindowId {
         self.window.id()
+    }
+
+    /// Get the Windows HWND for this overlay window
+    #[cfg(target_os = "windows")]
+    pub fn hwnd(&self) -> isize {
+        self.window.hwnd() as isize
     }
 
     pub fn handle_redraw(&mut self) {
@@ -156,6 +165,7 @@ impl Overlay {
             AppStatus::Recording => 0xFFDD3333,   // Red
             AppStatus::Processing => 0xFFDDAA00,  // Yellow/Orange
             AppStatus::AlwaysListening => 0xFF33AA33, // Green
+            AppStatus::AlwaysListeningRecording => 0xFFDD3333, // Red (same as Recording)
         };
 
         // Fill the buffer
@@ -170,6 +180,7 @@ impl Overlay {
                 AppStatus::Recording => 0xFFFF5555,
                 AppStatus::Processing => 0xFFFFCC00,
                 AppStatus::AlwaysListening => 0xFF55DD55,
+                AppStatus::AlwaysListeningRecording => 0xFFFF5555, // Red border
             };
 
             let w = self.width as usize;
@@ -216,24 +227,28 @@ mod tests {
             AppStatus::Recording,
             AppStatus::Processing,
             AppStatus::AlwaysListening,
+            AppStatus::AlwaysListeningRecording,
         ];
-        
-        // Each status should have a distinct color
+
+        // Each status should have a distinct color (AlwaysListeningRecording shares with Recording)
         let colors: Vec<u32> = statuses.iter().map(|s| {
             match s {
                 AppStatus::Idle => 0xFF505050,
                 AppStatus::Recording => 0xFFDD3333,
                 AppStatus::Processing => 0xFFDDAA00,
                 AppStatus::AlwaysListening => 0xFF33AA33,
+                AppStatus::AlwaysListeningRecording => 0xFFDD3333,
             }
         }).collect();
         
-        // Colors should be unique
-        for i in 0..colors.len() {
-            for j in i+1..colors.len() {
-                assert_ne!(colors[i], colors[j], "Each status should have a unique color");
-            }
-        }
+        // Each base status should have a distinct color
+        // (AlwaysListeningRecording intentionally shares color with Recording)
+        assert_ne!(colors[0], colors[1], "Idle and Recording should differ");
+        assert_ne!(colors[0], colors[2], "Idle and Processing should differ");
+        assert_ne!(colors[0], colors[3], "Idle and AlwaysListening should differ");
+        assert_ne!(colors[1], colors[2], "Recording and Processing should differ");
+        assert_ne!(colors[1], colors[3], "Recording and AlwaysListening should differ");
+        assert_ne!(colors[2], colors[3], "Processing and AlwaysListening should differ");
     }
 
     #[test]

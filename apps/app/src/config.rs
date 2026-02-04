@@ -28,6 +28,13 @@ pub struct Config {
     pub hotkey_always_listen: String,
     #[serde(default)]
     pub input_device_name: Option<String>,
+    /// Silence timeout for always-listen mode (milliseconds)
+    #[serde(default = "default_silence_timeout_ms")]
+    pub silence_timeout_ms: u64,
+}
+
+fn default_silence_timeout_ms() -> u64 {
+    2000 // 2 seconds default
 }
 
 fn default_backend_id() -> String {
@@ -49,6 +56,7 @@ impl Default for Config {
             hotkey_push_to_talk: "Backquote".to_string(),
             hotkey_always_listen: "Control+Backquote".to_string(),
             input_device_name: None,
+            silence_timeout_ms: default_silence_timeout_ms(),
         }
     }
 }
@@ -505,6 +513,7 @@ impl Config {
         cuda_path: Option<PathBuf>,
         cudnn_path: Option<PathBuf>,
         input_device_name: Option<String>,
+        silence_timeout_ms: u64,
     ) -> Self {
         Self {
             backend_id: backend_id.to_string(),
@@ -519,6 +528,7 @@ impl Config {
             hotkey_push_to_talk: hotkey_push_to_talk.to_string(),
             hotkey_always_listen: hotkey_always_listen.to_string(),
             input_device_name,
+            silence_timeout_ms,
         }
     }
 }
@@ -552,6 +562,7 @@ mod tests {
             Some(PathBuf::from("/cuda")),
             Some(PathBuf::from("/cudnn")),
             None,
+            2000,
         );
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -583,6 +594,7 @@ mod tests {
             None,
             None,
             None,
+            2000,
         );
 
         // Save config
@@ -668,6 +680,7 @@ mod tests {
             Some(PathBuf::from("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0")),
             Some(PathBuf::from("C:/Program Files/NVIDIA/CUDNN/v9.18")),
             None,
+            2000,
         );
 
         assert!(config.use_gpu);
@@ -693,6 +706,7 @@ mod tests {
             None,
             None,
             None,
+            2000,
         );
 
         assert!(!config.use_gpu);
@@ -712,6 +726,7 @@ mod tests {
             Some(PathBuf::from("/cuda/path")),
             Some(PathBuf::from("/cudnn/path")),
             None,
+            2000,
         );
 
         let json = serde_json::to_string_pretty(&config).unwrap();
