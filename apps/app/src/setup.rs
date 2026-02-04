@@ -164,6 +164,36 @@ impl SetupState {
             }
         }
 
+        // Resolve saved model selection from config (if any).
+        let mut selected_model: Option<usize> = None;
+        let mut selected_backend_id: Option<String> = None;
+        if let Some(ref cfg) = existing_config {
+            if let Some(idx) = all_models.iter().position(|u| {
+                u.backend_id == cfg.backend_id && u.model.id == cfg.model_name
+            }) {
+                selected_model = Some(idx);
+                selected_backend_id = Some(cfg.backend_id.clone());
+            } else if let Some(model_folder) = cfg.model_path.file_name().and_then(|n| n.to_str()) {
+                if let Some(idx) = all_models.iter().position(|u| u.model.folder_name == model_folder) {
+                    selected_model = Some(idx);
+                    selected_backend_id = Some(all_models[idx].backend_id.clone());
+                }
+            }
+        }
+
+        let model_downloaded = selected_model
+            .and_then(|idx| all_models.get(idx))
+            .map(is_unified_model_downloaded)
+            .unwrap_or(false);
+
+        let status = if selected_model.is_some() && model_downloaded {
+            "Model ready! Click Start.".to_string()
+        } else if selected_model.is_some() {
+            "Model selected. Click Download.".to_string()
+        } else {
+            "Select a model to get started".to_string()
+        };
+
         // Load saved GPU settings if available, otherwise auto-detect.
         let use_gpu = existing_config.as_ref().map(|c| c.use_gpu).unwrap_or(false);
         let cuda_path = existing_config
@@ -181,9 +211,9 @@ impl SetupState {
             current_page: SetupPage::Home,
             available_backends,
             all_models,
-            selected_model: None,
+            selected_model,
             model_scroll_offset: 0,
-            selected_backend_id: None,
+            selected_backend_id,
             push_to_talk_hotkey: Some(
                 existing_config
                     .as_ref()
@@ -204,9 +234,9 @@ impl SetupState {
             cudnn_path,
             cuda_valid,
             cudnn_valid,
-            status: "Select a model to get started".to_string(),
+            status,
             download_progress: None,
-            model_downloaded: false,
+            model_downloaded,
             hovered_button: None,
             mouse_pos: (0.0, 0.0),
         }
