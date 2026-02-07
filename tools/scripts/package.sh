@@ -4,7 +4,7 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${SCRIPT_DIR}/../.." || exit 1
 
-VERSION="0.1.2"
+VERSION="0.1.4"
 RELEASE_NAME="app-v${VERSION}"
 RELEASE_DIR="dist/${RELEASE_NAME}"
 
@@ -53,7 +53,7 @@ cp crates/backends/whisper-ct2/manifest.json "${RELEASE_DIR}/backends/whisper-ct
 cat > "${RELEASE_DIR}/README.txt" << 'EOF'
 App
 ===
-Version: 0.1.2
+Version: 0.1.4
 
 Quick Start:
 1. Run app.exe

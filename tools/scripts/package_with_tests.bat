@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 set SCRIPT_DIR=%~dp0
 pushd %SCRIPT_DIR%\..\..
 
-set VERSION=0.1.2
+set VERSION=0.1.4
 set RELEASE_NAME=app-v%VERSION%-cuda
 set RELEASE_DIR=dist\%RELEASE_NAME%
 

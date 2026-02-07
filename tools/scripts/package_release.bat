@@ -7,7 +7,7 @@ set SCRIPT_DIR=%~dp0
 pushd %SCRIPT_DIR%\..\..
 
 REM Configuration
-set VERSION=0.1.2
+set VERSION=0.1.4
 set RELEASE_NAME=app-v%VERSION%
 set BUILD_TYPE=%1
 
