@@ -14,7 +14,7 @@ mod typer;
 
 use anyhow::Result;
 use backend_loader::LoadedBackend;
-use config::{get_exe_stem, setup_cuda_env, Config};
+use config::{get_exe_stem, get_restart_event_name, setup_cuda_env, Config};
 use cpal::traits::StreamTrait;
 use hotkeys::{check_hotkey_event, HotkeyAction, HotkeyManager};
 use overlay::Overlay;
@@ -28,9 +28,13 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tray::AppStatus;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, WAIT_OBJECT_0,
+};
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, WaitForSingleObject,
+};
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
@@ -290,8 +294,16 @@ fn transcribe_and_type(
     _state: Arc<Mutex<AppMode>>,
     proxy: tao::event_loop::EventLoopProxy<UserEvent>,
     app_status: AppStatus,
+    partial_state: Option<Arc<Mutex<PartialState>>>,
+    is_partial: bool,
 ) {
     std::thread::spawn(move || {
+        // Basic silence gating to avoid hallucinations on empty/near-silent audio.
+        if !should_transcribe(&audio_data) {
+            let _ = proxy.send_event(UserEvent::TranscriptionComplete(app_status));
+            return;
+        }
+
         info!(
             "Transcribing {} samples (~{:.1}s of audio)...",
             audio_data.len(),
@@ -301,10 +313,92 @@ fn transcribe_and_type(
         match model.transcribe(&audio_data) {
             Ok(text) => {
                 if !text.is_empty() {
-                    info!("Result: \"{}\"", text);
-                    info!("Typing into active window...");
-                    if let Err(e) = typer.lock().type_text(&text) {
-                        error!("Failed to type: {}", e);
+                    let trimmed = text.trim().to_string();
+                    if trimmed.is_empty() {
+                        info!("No speech detected");
+                        let _ = proxy.send_event(UserEvent::TranscriptionComplete(app_status));
+                        return;
+                    }
+
+                    if let Some(state) = partial_state.as_ref() {
+                        let mut st = state.lock();
+                        if is_partial {
+                            let normalized = normalize_partial(&trimmed);
+                            if normalized.is_empty()
+                                || looks_like_url(&normalized)
+                                || is_symbol_heavy(&trimmed)
+                            {
+                                info!("Partial filtered: \"{}\"", trimmed);
+                                let _ =
+                                    proxy.send_event(UserEvent::TranscriptionComplete(app_status));
+                                return;
+                            }
+
+                            if normalized == st.last_candidate {
+                                st.candidate_count = st.candidate_count.saturating_add(1);
+                            } else {
+                                st.last_candidate = normalized.clone();
+                                st.candidate_count = 1;
+                            }
+
+                            if st.candidate_count < 2 {
+                                info!("Partial unstable, waiting: \"{}\"", trimmed);
+                                let _ =
+                                    proxy.send_event(UserEvent::TranscriptionComplete(app_status));
+                                return;
+                            }
+
+                            // Only type the suffix if the new text extends the previous typed partial.
+                            if !st.last_typed.is_empty() && trimmed.starts_with(&st.last_typed) {
+                                let suffix = &trimmed[st.last_typed.len()..];
+                                if !suffix.is_empty() {
+                                    info!("Partial result: \"{}\"", trimmed);
+                                    info!("Typing partial suffix...");
+                                    if let Err(e) = typer.lock().type_text(suffix) {
+                                        error!("Failed to type partial suffix: {}", e);
+                                    }
+                                }
+                            } else if st.last_typed.is_empty() {
+                                info!("Partial result: \"{}\"", trimmed);
+                                info!("Typing partial text...");
+                                if let Err(e) = typer.lock().type_text(&trimmed) {
+                                    error!("Failed to type partial text: {}", e);
+                                }
+                            } else {
+                                info!("Partial changed, skipping typing this chunk");
+                            }
+
+                            st.last_typed = trimmed;
+                            let _ = proxy.send_event(UserEvent::TranscriptionComplete(app_status));
+                            return;
+                        } else {
+                            // Final result: type only the delta if it extends the last partial.
+                            if !st.last_typed.is_empty() && trimmed.starts_with(&st.last_typed) {
+                                let suffix = &trimmed[st.last_typed.len()..];
+                                if !suffix.is_empty() {
+                                    info!("Final result (delta): \"{}\"", trimmed);
+                                    info!("Typing final suffix...");
+                                    if let Err(e) = typer.lock().type_text(suffix) {
+                                        error!("Failed to type final suffix: {}", e);
+                                    }
+                                }
+                            } else {
+                                info!("Final result: \"{}\"", trimmed);
+                                info!("Typing into active window...");
+                                if let Err(e) = typer.lock().type_text(&trimmed) {
+                                    error!("Failed to type: {}", e);
+                                }
+                            }
+                            st.last_typed.clear();
+                            st.last_candidate.clear();
+                            st.candidate_count = 0;
+                        }
+                    } else {
+                        info!("Result: \"{}\"", trimmed);
+                        info!("Typing into active window...");
+                        if let Err(e) = typer.lock().type_text(&trimmed) {
+                            error!("Failed to type: {}", e);
+                        }
                     }
                 } else {
                     info!("No speech detected");
@@ -317,6 +411,74 @@ fn transcribe_and_type(
 
         let _ = proxy.send_event(UserEvent::TranscriptionComplete(app_status));
     });
+}
+
+#[derive(Default)]
+struct PartialState {
+    last_typed: String,
+    last_candidate: String,
+    candidate_count: u8,
+}
+
+fn normalize_partial(text: &str) -> String {
+    text.trim().to_lowercase()
+}
+
+fn looks_like_url(text: &str) -> bool {
+    let t = text.trim();
+    if t.starts_with("www.") || t.starts_with("http://") || t.starts_with("https://") {
+        return true;
+    }
+    if t.contains(".com") || t.contains(".org") || t.contains(".net") {
+        return true;
+    }
+    false
+}
+
+fn is_symbol_heavy(text: &str) -> bool {
+    let mut symbol_count = 0usize;
+    let mut alnum_count = 0usize;
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            alnum_count += 1;
+        } else if !ch.is_whitespace() {
+            symbol_count += 1;
+        }
+    }
+    if alnum_count < 3 {
+        return true;
+    }
+    symbol_count * 2 >= (alnum_count + symbol_count)
+}
+
+fn should_transcribe(audio_data: &[f32]) -> bool {
+    let sample_count = audio_data.len();
+    if sample_count == 0 {
+        warn!("Skipping transcription: no audio captured");
+        return false;
+    }
+
+    let duration_s = sample_count as f32 / 16000.0;
+    if duration_s < 0.15 {
+        warn!("Skipping transcription: audio too short ({:.3}s)", duration_s);
+        return false;
+    }
+
+    let max_val = audio_data
+        .iter()
+        .map(|x| x.abs())
+        .fold(0.0f32, f32::max);
+    let rms = (audio_data.iter().map(|x| x * x).sum::<f32>() / sample_count as f32).sqrt();
+
+    if max_val < 0.01 && rms < 0.004 {
+        warn!(
+            "Skipping transcription: audio too quiet (max={:.4}, rms={:.4})",
+            max_val, rms
+        );
+        return false;
+    }
+
+    true
 }
 
 fn run_app(mut config: Config) -> Result<()> {
@@ -468,6 +630,10 @@ fn run_app(mut config: Config) -> Result<()> {
     let proxy = event_loop.create_proxy();
 
     // Initialize hotkeys from config
+    info!(
+        "Registering hotkeys: PTT='{}', AlwaysListen='{}'",
+        config.hotkey_push_to_talk, config.hotkey_always_listen
+    );
     let hotkey_manager = match HotkeyManager::from_config(
         &config.hotkey_push_to_talk,
         &config.hotkey_always_listen,
@@ -535,24 +701,60 @@ fn run_app(mut config: Config) -> Result<()> {
 
     // App state
     let state = Arc::new(Mutex::new(AppMode::Idle));
+    let always_listen_partial = Arc::new(Mutex::new(PartialState::default()));
     let running = Arc::new(AtomicBool::new(true));
+
+    // Restart signal (from settings wizard)
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(name) = get_restart_event_name() {
+            let wide = config::to_wide(&name);
+            let handle = unsafe { CreateEventW(None, false, false, PCWSTR(wide.as_ptr())) };
+            match handle {
+                Ok(handle) => {
+                    if handle.is_invalid() {
+                        warn!("Failed to create restart event: {:?}", unsafe { GetLastError() });
+                    } else {
+                        let handle_value = handle.0 as usize;
+                        let restart_proxy = proxy.clone();
+                        std::thread::spawn(move || {
+                            let handle = HANDLE(handle_value as *mut _);
+                            let wait = unsafe { WaitForSingleObject(handle, u32::MAX) };
+                            if wait == WAIT_OBJECT_0 {
+                                let _ = restart_proxy.send_event(UserEvent::RestartRequested);
+                            }
+                            let _ = unsafe { CloseHandle(handle) };
+                        });
+                    }
+                }
+                Err(_) => {
+                    warn!("Failed to create restart event");
+                }
+            }
+        } else {
+            warn!("Failed to compute restart event name");
+        }
+    }
 
     // Always-listen state
     let always_listen_active = Arc::new(AtomicBool::new(false));
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<f32>>(100);
-    let (result_tx, _result_rx) = crossbeam_channel::bounded::<Vec<f32>>(10);
+    let (result_tx, _result_rx) =
+        crossbeam_channel::bounded::<always_listen::AlwaysListenResult>(10);
 
     // Spawn always-listen processing thread
     let always_listen_running = Arc::clone(&running);
     let always_listen_active_thread = Arc::clone(&always_listen_active);
     let al_proxy = proxy.clone();
     let silence_timeout_ms = config.silence_timeout_ms;
+    let streaming_interval_ms = config.streaming_interval_ms;
 
     std::thread::spawn(move || {
         use always_listen::{AlwaysListenConfig, AlwaysListenController, AlwaysListenState};
 
         let mut al_config = AlwaysListenConfig::default();
         al_config.post_silence_duration_ms = silence_timeout_ms;
+        al_config.streaming_interval_ms = streaming_interval_ms;
         let controller = AlwaysListenController::new(al_config, audio_rx, result_tx);
 
         // Track previous state to detect changes
@@ -576,11 +778,15 @@ fn run_app(mut config: Config) -> Result<()> {
                 }
 
                 // Check for transcription results
-                if let Some(audio_data) = controller.try_recv_result() {
-                    debug!("Received {} samples from always-listen", audio_data.len());
+                if let Some(result) = controller.try_recv_result() {
+                    debug!(
+                        "Received {} samples from always-listen (partial={})",
+                        result.audio.len(),
+                        result.is_partial
+                    );
 
                     // Send event to main thread for transcription
-                    let _ = al_proxy.send_event(UserEvent::AlwaysListenAudio(audio_data));
+                    let _ = al_proxy.send_event(UserEvent::AlwaysListenAudio(result));
                 }
             } else {
                 if controller.state() != AlwaysListenState::Paused {
@@ -705,6 +911,8 @@ fn run_app(mut config: Config) -> Result<()> {
                                     Arc::clone(&state),
                                     proxy.clone(),
                                     AppStatus::Idle,
+                                    None,
+                                    false,
                                 );
                             }
                         }
@@ -747,7 +955,7 @@ fn run_app(mut config: Config) -> Result<()> {
                         }
                     }
                 }
-                UserEvent::AlwaysListenAudio(audio_data) => {
+                UserEvent::AlwaysListenAudio(result) => {
                     // Handle always-listen audio for transcription
                     *state.lock() = AppMode::Processing;
                     tray_manager.set_status(AppStatus::Processing);
@@ -755,12 +963,14 @@ fn run_app(mut config: Config) -> Result<()> {
 
                     // Transcribe the audio
                     transcribe_and_type(
-                        audio_data,
+                        result.audio,
                         Arc::clone(&model),
                         Arc::clone(&typer),
                         Arc::clone(&state),
                         proxy.clone(),
                         AppStatus::AlwaysListening,
+                        Some(Arc::clone(&always_listen_partial)),
+                        result.is_partial,
                     );
                 }
                 UserEvent::AlwaysListenStateChange(is_recording) => {
@@ -804,14 +1014,28 @@ fn run_app(mut config: Config) -> Result<()> {
                         }
                         // Save overlay position before exit
                         let (x, y) = overlay.get_position();
-                        config.overlay_x = Some(x);
-                        config.overlay_y = Some(y);
-                        if let Err(e) = config.save() {
+                        if let Err(e) = save_overlay_position(x, y) {
                             error!("Failed to save config: {}", e);
                         }
                         running.store(false, Ordering::SeqCst);
                         *control_flow = ControlFlow::Exit;
                     }
+                }
+                UserEvent::RestartRequested => {
+                    info!("Restart requested from settings...");
+                    // Stop always-listen
+                    always_listen_active.store(false, Ordering::SeqCst);
+                    always_listen_stream_running.store(false, Ordering::SeqCst);
+                    if let Some(ref stream) = always_listen_stream {
+                        let _ = stream.pause();
+                    }
+                    // Save overlay position before exit
+                    let (x, y) = overlay.get_position();
+                    if let Err(e) = save_overlay_position(x, y) {
+                        error!("Failed to save config: {}", e);
+                    }
+                    running.store(false, Ordering::SeqCst);
+                    *control_flow = ControlFlow::Exit;
                 }
                 UserEvent::TranscriptionComplete(target_status) => {
                     let mode = *state.lock();
@@ -922,11 +1146,19 @@ fn run_app(mut config: Config) -> Result<()> {
     });
 }
 
+fn save_overlay_position(x: i32, y: i32) -> Result<()> {
+    let mut cfg = Config::load()?;
+    cfg.overlay_x = Some(x);
+    cfg.overlay_y = Some(y);
+    cfg.save()
+}
+
 #[derive(Debug, Clone)]
 enum UserEvent {
     Hotkey(HotkeyAction),
     Menu(tray_icon::menu::MenuId),
     TranscriptionComplete(AppStatus),
-    AlwaysListenAudio(Vec<f32>),
+    AlwaysListenAudio(always_listen::AlwaysListenResult),
     AlwaysListenStateChange(bool), // true = recording, false = listening
+    RestartRequested,
 }

@@ -3,6 +3,7 @@ use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
 };
+use tracing::info;
 
 pub struct HotkeyManager {
     #[allow(dead_code)]
@@ -44,9 +45,9 @@ impl HotkeyManager {
         let push_to_talk_display = format_hotkey_display(push_to_talk_str);
         let always_listen_display = format_hotkey_display(always_listen_str);
 
-        println!("Hotkeys registered:");
-        println!("  {} - Push-to-talk toggle", push_to_talk_display);
-        println!("  {} - Always-listening mode toggle", always_listen_display);
+        info!("Hotkeys registered:");
+        info!("  {} - Push-to-talk toggle", push_to_talk_display);
+        info!("  {} - Always-listening mode toggle", always_listen_display);
 
         Ok(Self {
             manager,
@@ -147,6 +148,16 @@ fn parse_key_code(s: &str) -> Result<Code> {
         "KeyX" | "X" => Code::KeyX,
         "KeyY" | "Y" => Code::KeyY,
         "KeyZ" | "Z" => Code::KeyZ,
+        "Minus" | "-" => Code::Minus,
+        "Equal" | "=" => Code::Equal,
+        "BracketLeft" | "[" => Code::BracketLeft,
+        "BracketRight" | "]" => Code::BracketRight,
+        "Backslash" | "\\" => Code::Backslash,
+        "Semicolon" | ";" => Code::Semicolon,
+        "Quote" | "'" => Code::Quote,
+        "Comma" | "," => Code::Comma,
+        "Period" | "." => Code::Period,
+        "Slash" | "/" => Code::Slash,
         "F1" => Code::F1,
         "F2" => Code::F2,
         "F3" => Code::F3,
@@ -159,6 +170,8 @@ fn parse_key_code(s: &str) -> Result<Code> {
         "F10" => Code::F10,
         "F11" => Code::F11,
         "F12" => Code::F12,
+        "Enter" => Code::Enter,
+        "Backspace" => Code::Backspace,
         "Space" => Code::Space,
         "Tab" => Code::Tab,
         "CapsLock" => Code::CapsLock,
@@ -198,6 +211,16 @@ fn parse_key_code(s: &str) -> Result<Code> {
 fn format_hotkey_display(s: &str) -> String {
     s.replace("Control", "Ctrl")
         .replace("Backquote", "`")
+        .replace("Minus", "-")
+        .replace("Equal", "=")
+        .replace("BracketLeft", "[")
+        .replace("BracketRight", "]")
+        .replace("Backslash", "\\")
+        .replace("Semicolon", ";")
+        .replace("Quote", "'")
+        .replace("Comma", ",")
+        .replace("Period", ".")
+        .replace("Slash", "/")
         .replace("Key", "")
         .replace("Digit", "")
 }

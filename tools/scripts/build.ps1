@@ -12,7 +12,7 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location (Join-Path $scriptRoot "..\\..")
 
 # Configuration
-$VERSION = "0.1.0"
+$VERSION = "0.1.2"
 $RELEASE_DIR = "target\release"
 $PACKAGE_DIR = "dist\app-v$VERSION-cuda"
 

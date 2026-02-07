@@ -31,12 +31,18 @@ pub struct Config {
     /// Silence timeout for always-listen mode (milliseconds)
     #[serde(default = "default_silence_timeout_ms")]
     pub silence_timeout_ms: u64,
+    /// Pseudo-streaming interval for always-listen (milliseconds)
+    #[serde(default = "default_streaming_interval_ms")]
+    pub streaming_interval_ms: u64,
 }
 
 fn default_silence_timeout_ms() -> u64 {
     2000 // 2 seconds default
 }
 
+fn default_streaming_interval_ms() -> u64 {
+    1200
+}
 fn default_backend_id() -> String {
     "whisper-ct2".to_string()
 }
@@ -57,6 +63,7 @@ impl Default for Config {
             hotkey_always_listen: "Control+Backquote".to_string(),
             input_device_name: None,
             silence_timeout_ms: default_silence_timeout_ms(),
+            streaming_interval_ms: default_streaming_interval_ms(),
         }
     }
 }
@@ -79,6 +86,18 @@ pub fn get_exe_stem() -> Result<String> {
         .filter(|s| !s.is_empty())
         .unwrap_or("app");
     Ok(stem.to_string())
+}
+
+/// Get the named restart event for this executable instance.
+pub fn get_restart_event_name() -> Result<String> {
+    Ok(format!("SpeechWindowsRestart-{}", get_exe_stem()?))
+}
+
+#[cfg(target_os = "windows")]
+pub fn to_wide(s: &str) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
 /// Get the models directory (next to exe)
@@ -514,6 +533,7 @@ impl Config {
         cudnn_path: Option<PathBuf>,
         input_device_name: Option<String>,
         silence_timeout_ms: u64,
+        streaming_interval_ms: u64,
     ) -> Self {
         Self {
             backend_id: backend_id.to_string(),
@@ -529,6 +549,7 @@ impl Config {
             hotkey_always_listen: hotkey_always_listen.to_string(),
             input_device_name,
             silence_timeout_ms,
+            streaming_interval_ms,
         }
     }
 }
@@ -563,6 +584,7 @@ mod tests {
             Some(PathBuf::from("/cudnn")),
             None,
             2000,
+            1200,
         );
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -595,6 +617,7 @@ mod tests {
             None,
             None,
             2000,
+            1200,
         );
 
         // Save config
@@ -681,6 +704,7 @@ mod tests {
             Some(PathBuf::from("C:/Program Files/NVIDIA/CUDNN/v9.18")),
             None,
             2000,
+            1200,
         );
 
         assert!(config.use_gpu);
@@ -707,6 +731,7 @@ mod tests {
             None,
             None,
             2000,
+            1200,
         );
 
         assert!(!config.use_gpu);
@@ -727,6 +752,7 @@ mod tests {
             Some(PathBuf::from("/cudnn/path")),
             None,
             2000,
+            1200,
         );
 
         let json = serde_json::to_string_pretty(&config).unwrap();

@@ -21,7 +21,8 @@ tools\scripts\build_win.bat
   - Overlay turns **red** when speech is detected and recording
   - Overlay turns **yellow** during transcription processing
   - Silence timeout is configurable (0.1–5 seconds, default 2s)
-- Microphone selection and silence timeout are adjustable in the setup wizard.
+  - Pseudo-streaming partial interval is configurable (200–3000 ms, default 1200 ms)
+- Microphone selection, silence timeout, and streaming interval are adjustable in the setup wizard.
 - Right-click the overlay or system tray icon for the context menu.
 
 ## Config & Logs
@@ -29,6 +30,7 @@ tools\scripts\build_win.bat
 - Config is stored next to the exe: `config-<exe>.json` (e.g., `config-app.json`).
 - Logs are stored next to the exe: `app-<exe>.log`.
 - Running two copies of the same exe name is blocked; rename the exe to run multiple instances.
+- Setup wizard is single-instance per exe name.
 
 ## Structure
 
@@ -49,5 +51,9 @@ tools\scripts\build_win.bat
 ```batch
 tools\scripts\package_release.bat [cuda|cpu]
 ```
+
+## Changelog
+
+See `CHANGELOG.md` for release notes.
 
 See `AGENTS.md` and `docs/CLAUDE.md` for contributor guidance.

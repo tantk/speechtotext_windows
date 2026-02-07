@@ -1,5 +1,8 @@
 use crate::backend_loader::{discover_backends, get_backends_dir, BackendManifest, ManifestModel};
-use crate::config::{detect_cuda_path, detect_cudnn_path, get_models_dir, validate_cuda_path, validate_cudnn_path, Config};
+use crate::config::{
+    detect_cuda_path, detect_cudnn_path, get_exe_stem, get_models_dir, get_restart_event_name,
+    validate_cuda_path, validate_cudnn_path, Config,
+};
 use crate::downloader::{self, DownloadProgress};
 use cpal::traits::{DeviceTrait, HostTrait};
 use image::GenericImageView;
@@ -11,9 +14,17 @@ use tao::event::{ElementState, Event, MouseButton, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::keyboard::{KeyCode, ModifiersState};
 use tao::window::{Icon, WindowBuilder};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{
+    CreateMutexW, OpenEventW, SetEvent, EVENT_MODIFY_STATE,
+};
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
 
 const WINDOW_WIDTH: u32 = 500;
-const WINDOW_HEIGHT: u32 = 500;
+const WINDOW_HEIGHT: u32 = 600;
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/mic_gray.png");
 
 // Colors
@@ -29,6 +40,15 @@ const PROGRESS_BG: u32 = 0xFF2a2a4a;
 const PROGRESS_FG: u32 = 0xFF4ade80;
 const FIELD_BG: u32 = 0xFF252545;
 const CAPTURE_BG: u32 = 0xFF1a3a5a;
+
+// Hotkey page layout constants (keep render + hitboxes in sync)
+const HOTKEY_CLOSE_X: u32 = 175;
+const HOTKEY_CLOSE_Y: u32 = 520;
+const HOTKEY_CLOSE_W: u32 = 150;
+const HOTKEY_CLOSE_H: u32 = 45;
+
+const HOTKEY_SILENCE_Y: u32 = 365;
+const HOTKEY_STREAMING_Y: u32 = 450;
 
 // Pages in the setup wizard
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +110,7 @@ struct SetupState {
 
     // Always-listen settings
     silence_timeout_ms: u64,
+    streaming_interval_ms: u64,
 
     // GPU/CUDA settings
     use_gpu: bool,
@@ -140,6 +161,8 @@ enum Button {
     // Toggle listen config (silence timeout)
     SilenceTimeoutDecrease,
     SilenceTimeoutIncrease,
+    StreamingIntervalDecrease,
+    StreamingIntervalIncrease,
 
     // CUDA config page
     DetectCuda,
@@ -282,6 +305,10 @@ impl SetupState {
                 .as_ref()
                 .map(|c| c.silence_timeout_ms)
                 .unwrap_or(2000),
+            streaming_interval_ms: existing_config
+                .as_ref()
+                .map(|c| c.streaming_interval_ms)
+                .unwrap_or(1200),
             use_gpu,
             cuda_path,
             cudnn_path,
@@ -378,6 +405,34 @@ fn load_window_icon() -> Option<Icon> {
     Icon::from_rgba(rgba, width, height).ok()
 }
 
+#[cfg(target_os = "windows")]
+fn acquire_setup_lock() -> Option<HANDLE> {
+    let name = match get_exe_stem() {
+        Ok(stem) => format!("SpeechWindowsSetup-{}", stem),
+        Err(_) => return None,
+    };
+    let wide = crate::config::to_wide(&name);
+    let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) };
+    let handle = match handle {
+        Ok(handle) => handle,
+        Err(_) => return None,
+    };
+    if handle.is_invalid() {
+        return None;
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // Another setup wizard already running
+        let _ = unsafe { CloseHandle(handle) };
+        return None;
+    }
+    Some(handle)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn acquire_setup_lock() -> Option<()> {
+    Some(())
+}
+
 /// Run the setup wizard for initial setup (spawns new process on completion)
 pub fn run_setup() -> ! {
     run_setup_inner(false)
@@ -393,6 +448,12 @@ pub fn run_setup_from_settings() -> ! {
 /// 2. Just exits (if from_settings is true, since app is already running), or
 /// 3. User closes the window and exits
 fn run_setup_inner(from_settings: bool) -> ! {
+    // Prevent multiple setup wizards from running at once
+    let _setup_lock = acquire_setup_lock();
+    if _setup_lock.is_none() {
+        std::process::exit(0);
+    }
+
     let event_loop = EventLoopBuilder::<SetupEvent>::with_user_event().build();
     let window_icon = load_window_icon();
 
@@ -473,8 +534,22 @@ fn run_setup_inner(from_settings: bool) -> ! {
                 // Handle hotkey capture
                 if state.hotkey_capture == HotkeyCapture::WaitingForKey {
                     if key_event.state == ElementState::Pressed {
+                        // Prefer physical key codes for consistent hotkey strings,
+                        // fall back to logical keys when physical is unavailable.
+                        let code = key_event.physical_key;
+                        if is_modifier_key(code) {
+                            return;
+                        }
+                        if let Some(key_str) = keycode_to_string(code, &state.current_modifiers) {
+                            eprintln!("DEBUG: Captured hotkey: {}", key_str);
+                            state.captured_key = Some(key_str);
+                            state.hotkey_capture = HotkeyCapture::Idle;
+                            window.request_redraw();
+                            return;
+                        }
+
                         use tao::keyboard::Key;
-                        
+
                         // Build modifier prefix first
                         let mut parts = Vec::new();
                         if state.current_modifiers.control_key() {
@@ -489,7 +564,7 @@ fn run_setup_inner(from_settings: bool) -> ! {
                         if state.current_modifiers.super_key() {
                             parts.push("Super".to_string());
                         }
-                        
+
                         // Get key name based on the Key variant
                         let key_name = match &key_event.logical_key {
                             Key::Character(c) => c.to_uppercase().to_string(),
@@ -526,10 +601,10 @@ fn run_setup_inner(from_settings: bool) -> ! {
                             // Ignore other keys we don't handle
                             _ => return,
                         };
-                        
+
                         parts.push(key_name);
                         let key_str = parts.join("+");
-                        
+
                         eprintln!("DEBUG: Captured hotkey: {}", key_str);
                         state.captured_key = Some(key_str);
                         state.hotkey_capture = HotkeyCapture::Idle;
@@ -652,7 +727,7 @@ fn is_modifier_key(keycode: KeyCode) -> bool {
 }
 
 #[allow(dead_code)]
-fn keycode_to_string(keycode: KeyCode, modifiers: &ModifiersState) -> String {
+fn keycode_to_string(keycode: KeyCode, modifiers: &ModifiersState) -> Option<String> {
     let mut parts = Vec::new();
 
     if modifiers.control_key() {
@@ -680,6 +755,16 @@ fn keycode_to_string(keycode: KeyCode, modifiers: &ModifiersState) -> String {
         KeyCode::Digit8 => "Digit8",
         KeyCode::Digit9 => "Digit9",
         KeyCode::Digit0 => "Digit0",
+        KeyCode::Minus => "Minus",
+        KeyCode::Equal => "Equal",
+        KeyCode::BracketLeft => "BracketLeft",
+        KeyCode::BracketRight => "BracketRight",
+        KeyCode::Backslash => "Backslash",
+        KeyCode::Semicolon => "Semicolon",
+        KeyCode::Quote => "Quote",
+        KeyCode::Comma => "Comma",
+        KeyCode::Period => "Period",
+        KeyCode::Slash => "Slash",
         KeyCode::KeyA => "KeyA",
         KeyCode::KeyB => "KeyB",
         KeyCode::KeyC => "KeyC",
@@ -718,6 +803,8 @@ fn keycode_to_string(keycode: KeyCode, modifiers: &ModifiersState) -> String {
         KeyCode::F10 => "F10",
         KeyCode::F11 => "F11",
         KeyCode::F12 => "F12",
+        KeyCode::Enter => "Enter",
+        KeyCode::Backspace => "Backspace",
         KeyCode::Space => "Space",
         KeyCode::Tab => "Tab",
         KeyCode::CapsLock => "CapsLock",
@@ -748,11 +835,36 @@ fn keycode_to_string(keycode: KeyCode, modifiers: &ModifiersState) -> String {
         KeyCode::NumpadDivide => "NumpadDivide",
         KeyCode::NumpadEnter => "NumpadEnter",
         KeyCode::NumpadDecimal => "NumpadDecimal",
-        _ => "Unknown",
+        _ => return None,
     };
 
     parts.push(key_name);
-    parts.join("+")
+    Some(parts.join("+"))
+}
+
+#[cfg(target_os = "windows")]
+fn signal_restart_event() -> bool {
+    let name = match get_restart_event_name() {
+        Ok(name) => name,
+        Err(_) => return false,
+    };
+    let wide = crate::config::to_wide(&name);
+    let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(wide.as_ptr())) };
+    let handle = match handle {
+        Ok(handle) => handle,
+        Err(_) => return false,
+    };
+    if handle.is_invalid() {
+        return false;
+    }
+    let _ = unsafe { SetEvent(handle) };
+    let _ = unsafe { CloseHandle(handle) };
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+fn signal_restart_event() -> bool {
+    false
 }
 
 fn get_button_rects(state: &SetupState) -> Vec<ButtonRect> {
@@ -854,10 +966,10 @@ fn get_home_buttons(state: &SetupState) -> Vec<ButtonRect> {
         });
     }
 
-    // Start button - fixed position at bottom (matches render at y=440)
+    // Start button - fixed position at bottom (matches render at y=530)
     buttons.push(ButtonRect {
         x: 175,
-        y: 440,
+        y: 530,
         width: 150,
         height: 45,
         button: Button::Start,
@@ -1064,10 +1176,10 @@ fn get_hotkey_page_buttons(state: &SetupState, target: HotkeyTarget) -> Vec<Butt
 
     // Close button at bottom
     buttons.push(ButtonRect {
-        x: 175,
-        y: 440,
-        width: 150,
-        height: 45,
+        x: HOTKEY_CLOSE_X,
+        y: HOTKEY_CLOSE_Y,
+        width: HOTKEY_CLOSE_W,
+        height: HOTKEY_CLOSE_H,
         button: Button::Close,
     });
 
@@ -1112,7 +1224,7 @@ fn get_hotkey_page_buttons(state: &SetupState, target: HotkeyTarget) -> Vec<Butt
         // Decrease button (-)
         buttons.push(ButtonRect {
             x: 150,
-            y: 365,
+            y: HOTKEY_SILENCE_Y,
             width: 40,
             height: 35,
             button: Button::SilenceTimeoutDecrease,
@@ -1121,10 +1233,26 @@ fn get_hotkey_page_buttons(state: &SetupState, target: HotkeyTarget) -> Vec<Butt
         // Increase button (+)
         buttons.push(ButtonRect {
             x: 310,
-            y: 365,
+            y: HOTKEY_SILENCE_Y,
             width: 40,
             height: 35,
             button: Button::SilenceTimeoutIncrease,
+        });
+
+        // Streaming interval controls
+        buttons.push(ButtonRect {
+            x: 150,
+            y: HOTKEY_STREAMING_Y,
+            width: 40,
+            height: 35,
+            button: Button::StreamingIntervalDecrease,
+        });
+        buttons.push(ButtonRect {
+            x: 310,
+            y: HOTKEY_STREAMING_Y,
+            width: 40,
+            height: 35,
+            button: Button::StreamingIntervalIncrease,
         });
     }
     let _ = state; // silence unused warning
@@ -1208,6 +1336,7 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
                     state.cudnn_path.clone(),
                     state.selected_input_device.clone(),
                     state.silence_timeout_ms,
+                    state.streaming_interval_ms,
                 );
                 config.overlay_visible = state.overlay_visible;
                 config.overlay_x = state.overlay_x;
@@ -1217,9 +1346,20 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
                     return None;
                 }
                 if state.from_settings {
-                    // Just exit - the main app is still running
-                    // User needs to restart the app to apply changes
-                    Some(SetupEvent::ExitWithoutConfig)
+                    // Restart running app to apply changes
+                    let signaled = signal_restart_event();
+                    if signaled {
+                        if let Ok(exe) = std::env::current_exe() {
+                            let _ = std::process::Command::new(exe)
+                                .arg("--delay-start")
+                                .spawn();
+                        }
+                        Some(SetupEvent::ExitWithoutConfig)
+                    } else {
+                        state.status =
+                            "Saved. Failed to restart app; please restart manually.".to_string();
+                        None
+                    }
                 } else {
                     // Initial setup - launch the app
                     if let Ok(exe) = std::env::current_exe() {
@@ -1439,6 +1579,7 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
                     .clone()
                     .unwrap_or_else(|| "Control+Backquote".to_string());
                 config.silence_timeout_ms = state.silence_timeout_ms;
+                config.streaming_interval_ms = state.streaming_interval_ms;
                 if let Err(e) = config.save() {
                     state.status = format!("Error saving hotkeys: {}", e);
                 }
@@ -1466,6 +1607,18 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
             // Increase by 100ms (0.1s), maximum 5000ms (5 seconds)
             if state.silence_timeout_ms < 5000 {
                 state.silence_timeout_ms = state.silence_timeout_ms.saturating_add(100);
+            }
+            None
+        }
+        Button::StreamingIntervalDecrease => {
+            if state.streaming_interval_ms > 200 {
+                state.streaming_interval_ms = state.streaming_interval_ms.saturating_sub(100);
+            }
+            None
+        }
+        Button::StreamingIntervalIncrease => {
+            if state.streaming_interval_ms < 3000 {
+                state.streaming_interval_ms = state.streaming_interval_ms.saturating_add(100);
             }
             None
         }
@@ -1615,9 +1768,9 @@ fn render_home_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
     } else {
         0xFF333355
     };
-    draw_rect(buffer, width, 175, 440, 150, 45, start_bg);
+    draw_rect(buffer, width, 175, 530, 150, 45, start_bg);
     let start_label = if state.from_settings { "Save" } else { "Start" };
-    draw_text(buffer, width, 222, 458, start_label, TEXT_COLOR);
+    draw_text(buffer, width, 222, 548, start_label, TEXT_COLOR);
 }
 
 
@@ -1633,8 +1786,8 @@ fn render_cuda_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
 
     // Close button at bottom
     let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
-    draw_rect(buffer, width, 175, 440, 150, 45, close_bg);
-    draw_text(buffer, width, 222, 458, "Close", TEXT_COLOR);
+    draw_rect(buffer, width, HOTKEY_CLOSE_X, HOTKEY_CLOSE_Y, HOTKEY_CLOSE_W, HOTKEY_CLOSE_H, close_bg);
+    draw_text(buffer, width, HOTKEY_CLOSE_X + 47, HOTKEY_CLOSE_Y + 18, "Close", TEXT_COLOR);
 
     // CUDA path
     draw_text(buffer, width, 30, 70, "CUDA Toolkit Path:", TEXT_COLOR);
@@ -1755,8 +1908,8 @@ fn render_model_page(state: &SetupState, buffer: &mut [u32], width: u32, _height
 
     // Close button at bottom
     let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
-    draw_rect(buffer, width, 175, 440, 150, 45, close_bg);
-    draw_text(buffer, width, 222, 458, "Close", TEXT_COLOR);
+    draw_rect(buffer, width, 175, 520, 150, 45, close_bg);
+    draw_text(buffer, width, 222, 538, "Close", TEXT_COLOR);
 
     if state.all_models.is_empty() {
         draw_text(buffer, width, 30, 100, "No models found!", TEXT_COLOR);
@@ -1850,8 +2003,8 @@ fn render_hotkey_page(state: &SetupState, buffer: &mut [u32], width: u32, _heigh
 
     // Close button at bottom
     let close_bg = if state.hovered_button == Some(Button::Close) { BUTTON_HOVER } else { BUTTON_COLOR };
-    draw_rect(buffer, width, 175, 440, 150, 45, close_bg);
-    draw_text(buffer, width, 222, 458, "Close", TEXT_COLOR);
+    draw_rect(buffer, width, 175, 520, 150, 45, close_bg);
+    draw_text(buffer, width, 222, 538, "Close", TEXT_COLOR);
 
     // Current hotkey display
     draw_text(buffer, width, 150, 80, "Current Hotkey:", TEXT_COLOR);
@@ -1893,27 +2046,42 @@ fn render_hotkey_page(state: &SetupState, buffer: &mut [u32], width: u32, _heigh
     // Instructions
     draw_text(buffer, width, 100, 310, "Click 'Set Hotkey' then press any key", DIM_TEXT);
 
-    // Silence timeout control (only for Toggle Listening)
-    if target == HotkeyTarget::ToggleListening {
+        // Silence timeout control (only for Toggle Listening)
+        if target == HotkeyTarget::ToggleListening {
         draw_text(buffer, width, 100, 345, "Silence Timeout:", TEXT_COLOR);
 
         // Decrease button (-)
         let dec_bg = if state.hovered_button == Some(Button::SilenceTimeoutDecrease) { BUTTON_HOVER } else { BUTTON_COLOR };
-        draw_rect(buffer, width, 150, 365, 40, 35, dec_bg);
-        draw_text(buffer, width, 165, 375, "-", TEXT_COLOR);
+        draw_rect(buffer, width, 150, HOTKEY_SILENCE_Y, 40, 35, dec_bg);
+        draw_text(buffer, width, 165, HOTKEY_SILENCE_Y + 10, "-", TEXT_COLOR);
 
         // Value display
-        draw_rect(buffer, width, 200, 365, 100, 35, FIELD_BG);
+        draw_rect(buffer, width, 200, HOTKEY_SILENCE_Y, 100, 35, FIELD_BG);
         let timeout_secs = state.silence_timeout_ms as f64 / 1000.0;
         let timeout_text = format!("{:.1}s", timeout_secs);
-        draw_text(buffer, width, 230, 375, &timeout_text, TEXT_COLOR);
+        draw_text(buffer, width, 230, HOTKEY_SILENCE_Y + 10, &timeout_text, TEXT_COLOR);
 
         // Increase button (+)
         let inc_bg = if state.hovered_button == Some(Button::SilenceTimeoutIncrease) { BUTTON_HOVER } else { BUTTON_COLOR };
-        draw_rect(buffer, width, 310, 365, 40, 35, inc_bg);
-        draw_text(buffer, width, 322, 375, "+", TEXT_COLOR);
+        draw_rect(buffer, width, 310, HOTKEY_SILENCE_Y, 40, 35, inc_bg);
+        draw_text(buffer, width, 322, HOTKEY_SILENCE_Y + 10, "+", TEXT_COLOR);
 
         draw_text(buffer, width, 100, 410, "Time of silence before transcription", DIM_TEXT);
+
+        // Streaming interval control
+        draw_text(buffer, width, 100, 430, "Streaming Interval:", TEXT_COLOR);
+
+        let dec_bg = if state.hovered_button == Some(Button::StreamingIntervalDecrease) { BUTTON_HOVER } else { BUTTON_COLOR };
+        draw_rect(buffer, width, 150, HOTKEY_STREAMING_Y, 40, 35, dec_bg);
+        draw_text(buffer, width, 165, HOTKEY_STREAMING_Y + 10, "-", TEXT_COLOR);
+
+        draw_rect(buffer, width, 200, HOTKEY_STREAMING_Y, 100, 35, FIELD_BG);
+        let interval_text = format!("{}ms", state.streaming_interval_ms);
+        draw_text(buffer, width, 220, HOTKEY_STREAMING_Y + 10, &interval_text, TEXT_COLOR);
+
+        let inc_bg = if state.hovered_button == Some(Button::StreamingIntervalIncrease) { BUTTON_HOVER } else { BUTTON_COLOR };
+        draw_rect(buffer, width, 310, HOTKEY_STREAMING_Y, 40, 35, inc_bg);
+        draw_text(buffer, width, 322, HOTKEY_STREAMING_Y + 10, "+", TEXT_COLOR);
     }
 }
 
@@ -1921,6 +2089,16 @@ fn format_hotkey_display(key: &str) -> String {
     // Convert internal format to user-friendly display
     key.replace("Control", "Ctrl")
        .replace("Backquote", "`")
+       .replace("Minus", "-")
+       .replace("Equal", "=")
+       .replace("BracketLeft", "[")
+       .replace("BracketRight", "]")
+       .replace("Backslash", "\\")
+       .replace("Semicolon", ";")
+       .replace("Quote", "'")
+       .replace("Comma", ",")
+       .replace("Period", ".")
+       .replace("Slash", "/")
        .replace("Key", "")
        .replace("Digit", "")
        .replace("Arrow", "")

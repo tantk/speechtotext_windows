@@ -58,6 +58,14 @@ pub struct AlwaysListenConfig {
     pub cooldown_ms: u64,
     /// Frames to analyze per VAD check (must be power of 2, 10-30ms worth)
     pub frame_samples: usize,
+    /// Enable pseudo-streaming partial transcriptions
+    pub streaming_enabled: bool,
+    /// Interval between partial transcriptions (ms)
+    pub streaming_interval_ms: u64,
+    /// Minimum recorded duration before first partial (ms)
+    pub streaming_min_duration_ms: u64,
+    /// Minimum additional audio between partials (ms)
+    pub streaming_min_increment_ms: u64,
 }
 
 impl Default for AlwaysListenConfig {
@@ -70,6 +78,10 @@ impl Default for AlwaysListenConfig {
             max_utterance_seconds: 30.0,   // Max 30s utterance
             cooldown_ms: 200,              // 200ms between utterances
             frame_samples: 480,            // 30ms at 16kHz
+            streaming_enabled: true,
+            streaming_interval_ms: 1200,
+            streaming_min_duration_ms: 900,
+            streaming_min_increment_ms: 600,
         }
     }
 }
@@ -83,6 +95,13 @@ pub enum AlwaysListenCommand {
     Pause,
     #[allow(dead_code)]
     Resume,
+}
+
+/// Result of always-listen transcription chunk
+#[derive(Debug, Clone)]
+pub struct AlwaysListenResult {
+    pub audio: Vec<f32>,
+    pub is_partial: bool,
 }
 
 /// Audio buffer manager with circular pre-roll buffer
@@ -167,6 +186,16 @@ impl AudioBufferManager {
     /// Get current recording duration in seconds
     pub fn recording_duration(&self) -> f64 {
         self.recording.len() as f64 / self.sample_rate as f64
+    }
+
+    /// Get current recording length in samples
+    pub fn recording_len(&self) -> usize {
+        self.recording.len()
+    }
+
+    /// Snapshot current recording buffer
+    pub fn recording_snapshot(&self) -> Vec<f32> {
+        self.recording.clone()
     }
 }
 
@@ -268,7 +297,7 @@ pub struct AlwaysListenController {
     /// Control command sender
     command_tx: Sender<AlwaysListenCommand>,
     /// Audio result receiver (raw audio data for transcription)
-    result_rx: Receiver<Vec<f32>>,
+    result_rx: Receiver<AlwaysListenResult>,
     /// Running flag
     running: Arc<AtomicBool>,
     /// Handle to processing thread
@@ -280,10 +309,10 @@ impl AlwaysListenController {
     pub fn new(
         config: AlwaysListenConfig,
         audio_rx: Receiver<Vec<f32>>,
-        _result_tx: Sender<Vec<f32>>, // Reserved for future use
+        _result_tx: Sender<AlwaysListenResult>, // Reserved for future use
     ) -> Self {
         let (command_tx, command_rx) = crossbeam_channel::bounded(10);
-        let (internal_result_tx, result_rx) = crossbeam_channel::bounded::<Vec<f32>>(10);
+        let (internal_result_tx, result_rx) = crossbeam_channel::bounded::<AlwaysListenResult>(10);
 
         let state = Arc::new(Mutex::new(AlwaysListenState::Listening));
         let running = Arc::new(AtomicBool::new(true));
@@ -365,13 +394,13 @@ impl AlwaysListenController {
     }
 
     /// Try to receive an audio result (non-blocking)
-    pub fn try_recv_result(&self) -> Option<Vec<f32>> {
+    pub fn try_recv_result(&self) -> Option<AlwaysListenResult> {
         self.result_rx.try_recv().ok()
     }
 
     /// Receive audio result (blocking with timeout)
     #[allow(dead_code)]
-    pub fn recv_result_timeout(&self, timeout: Duration) -> Option<Vec<f32>> {
+    pub fn recv_result_timeout(&self, timeout: Duration) -> Option<AlwaysListenResult> {
         self.result_rx.recv_timeout(timeout).ok()
     }
 }
@@ -393,7 +422,7 @@ fn processing_loop(
     config: AlwaysListenConfig,
     audio_rx: Receiver<Vec<f32>>,
     command_rx: Receiver<AlwaysListenCommand>,
-    result_tx: Sender<Vec<f32>>,
+    result_tx: Sender<AlwaysListenResult>,
 ) {
     let sample_rate = 16000u32;
     let frame_samples = config.frame_samples;
@@ -409,6 +438,8 @@ fn processing_loop(
 
     // Accumulate samples for frame processing
     let mut sample_buffer: Vec<f32> = Vec::with_capacity(frame_samples * 2);
+    let mut last_stream_at: Option<Instant> = None;
+    let mut last_stream_len: usize = 0;
 
     info!(
         "VAD initialized: threshold={}, frame_samples={}, min_voice_frames={}",
@@ -482,7 +513,37 @@ fn processing_loop(
                                     &state,
                                     &result_tx,
                                 );
+                                last_stream_at = None;
+                                last_stream_len = 0;
                                 continue;
+                            }
+
+                            // Pseudo-streaming partials
+                            if config.streaming_enabled {
+                                let now = Instant::now();
+                                let min_samples = (config.streaming_min_duration_ms as usize * sample_rate as usize) / 1000;
+                                let min_increment = (config.streaming_min_increment_ms as usize * sample_rate as usize) / 1000;
+                                let interval = Duration::from_millis(config.streaming_interval_ms);
+                                let recording_len = buffer_manager.recording_len();
+
+                                let interval_ok = last_stream_at
+                                    .map(|t| now.duration_since(t) >= interval)
+                                    .unwrap_or(true);
+
+                                if recording_len >= min_samples
+                                    && interval_ok
+                                    && recording_len.saturating_sub(last_stream_len) >= min_increment
+                                {
+                                    let snapshot = buffer_manager.recording_snapshot();
+                                    if !snapshot.is_empty() {
+                                        let _ = result_tx.send(AlwaysListenResult {
+                                            audio: snapshot,
+                                            is_partial: true,
+                                        });
+                                        last_stream_at = Some(now);
+                                        last_stream_len = recording_len;
+                                    }
+                                }
                             }
 
                             // Check for sustained silence
@@ -497,6 +558,8 @@ fn processing_loop(
                                     &state,
                                     &result_tx,
                                 );
+                                last_stream_at = None;
+                                last_stream_len = 0;
                             }
                         }
                         AlwaysListenState::Processing => {
@@ -525,7 +588,7 @@ fn finalize_recording(
     buffer_manager: &mut AudioBufferManager,
     vad: &mut VadEngine,
     state: &Arc<Mutex<AlwaysListenState>>,
-    result_tx: &Sender<Vec<f32>>,
+    result_tx: &Sender<AlwaysListenResult>,
 ) {
     let audio = buffer_manager.finalize();
 
@@ -541,7 +604,13 @@ fn finalize_recording(
     info!("Finalized recording: {} samples ({:.2}s)", audio.len(), audio.len() as f32 / 16000.0);
 
     // Send the actual audio data for transcription
-    if result_tx.send(audio).is_err() {
+    if result_tx
+        .send(AlwaysListenResult {
+            audio,
+            is_partial: false,
+        })
+        .is_err()
+    {
         error!("Failed to send audio data for transcription");
     }
 
