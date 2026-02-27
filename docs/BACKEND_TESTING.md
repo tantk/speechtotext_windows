@@ -1,14 +1,15 @@
 # Backend DLL Testing Guide
 
-This document describes how to test the speech-to-text backend DLLs (whisper_cpp.dll and whisper_ct2.dll) for GPU and CPU functionality.
+This document describes how to test the speech-to-text backend DLLs (whisper_cpp.dll, whisper_ct2.dll, and mistralrs_backend.dll) for GPU and CPU functionality.
 
 ## Overview
 
-The project includes two backend DLLs:
+The project includes three backend DLLs:
 - **whisper_cpp.dll** - Uses whisper.cpp (GGML format models)
 - **whisper_ct2.dll** - Uses CTranslate2 (Faster Whisper format models)
+- **mistralrs_backend.dll** - Uses mistral.rs (Voxtral multimodal LLM)
 
-Both support GPU acceleration via CUDA when built with the `cuda` feature.
+All support GPU acceleration via CUDA when built with the `cuda` feature.
 
 ---
 
@@ -17,8 +18,9 @@ Both support GPU acceleration via CUDA when built with the `cuda` feature.
 | Test Suite | Command | Description |
 |------------|---------|-------------|
 | Unit tests | `cargo test -p app` | 56 tests covering manifest parsing, config, etc. |
-| Integration tests | `cargo test -p app --test backend_dll_tests` | 10 tests for DLL/manifest existence |
+| Integration tests | `cargo test -p app --test backend_dll_tests` | 10+ tests for DLL/manifest existence |
 | GPU config tests | `cargo test -p app --test gpu_support_tests` | 11 tests for GPU configuration |
+| Voxtral tests | `cargo test -p app test_mistralrs -- --ignored` | Manual tests for Voxtral backend |
 | Backend loading | `cargo test -p app -- --ignored` | Manual tests requiring DLLs and models |
 
 ---
@@ -53,6 +55,7 @@ These tests require built DLLs and optionally model files. They are marked with 
    # CPU only
    cargo build --release -p whisper-cpp
    cargo build --release -p whisper-ct2
+   cargo build --release -p mistralrs
    
    # With CUDA support
    tools/scripts/build_cuda.bat
@@ -61,13 +64,16 @@ These tests require built DLLs and optionally model files. They are marked with 
 2. **Verify DLLs exist**:
    ```bash
    ls target/release/*.dll
-   # Should show: whisper_cpp.dll, whisper_ct2.dll
+   # Should show: whisper_cpp.dll, whisper_ct2.dll, mistralrs_backend.dll
    ```
 
 3. **Download model** (for transcription tests):
    ```bash
    # For whisper-cpp tests
    curl -L -o target/release/models/ggml-tiny.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+   
+   # For Voxtral tests (using HuggingFace CLI)
+   huggingface-cli download mistralai/Voxtral-Mini-4B-Realtime-2602 --local-dir target/release/models/Voxtral-Mini-4B-Realtime-2602
    ```
 
 ### Test 1: Load whisper-cpp Backend
@@ -262,10 +268,12 @@ Before releasing a GPU-enabled build:
 
 - [ ] Unit tests pass (`cargo test -p app`)
 - [ ] whisper_cpp.dll builds with CUDA
-- [ ] whisper_ct2.dll builds with CUDA  
+- [ ] whisper_ct2.dll builds with CUDA
+- [ ] mistralrs_backend.dll builds with CUDA
 - [ ] `test_whisper_cpp_backend_load` passes
 - [ ] `test_whisper_cpp_create_model_cpu` passes
 - [ ] `test_whisper_cpp_create_model_gpu` passes (if CUDA available)
+- [ ] `test_mistralrs_backend_load` passes (if model available)
 - [ ] Application starts with GPU enabled
 - [ ] Transcription produces results with GPU
 - [ ] GPU utilization visible during transcription

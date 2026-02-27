@@ -1,0 +1,28 @@
+[package]
+name = "mistralrs-backend"
+version.workspace = true
+edition.workspace = true
+description = "mistral.rs-based Voxtral backend for speech-to-text"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+app-core = { path = "../../app-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+once_cell.workspace = true
+
+# mistral.rs for Voxtral inference
+mistralrs = "0.7.0"
+mistralrs-audio = "0.7.0"
+
+# Audio preprocessing
+hound = "3.5"  # WAV file handling
+rubato = "0.16"  # Audio resampling
+
+[features]
+default = []
+cuda = ["mistralrs/cuda"]

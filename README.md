@@ -1,6 +1,6 @@
 # Speech-to-Text Windows
 
-Windows-native speech-to-text app with a pluggable backend system (whisper.cpp and CTranslate2), tray UI, and setup wizard for model downloads.
+Windows-native speech-to-text app with a pluggable backend system (Whisper, Faster Whisper, and Voxtral), tray UI, and setup wizard for model downloads.
 
 ## Quick Start
 
@@ -37,14 +37,18 @@ tools\scripts\build_win.bat
 - `apps/app` - main Windows GUI application
 - `crates/app-core` - shared FFI types
 - `crates/backends` - backend DLLs
+  - `whisper-cpp` - Whisper via whisper.cpp (GGML models)
+  - `whisper-ct2` - Faster Whisper via CTranslate2
+  - `mistralrs` - Voxtral via mistral.rs (multimodal LLM)
 - `tools/scripts` - build and packaging scripts
 - `docs` - project documentation
 
 ## Build Outputs
 
 - `target/release/app.exe`
-- `target/release/whisper_cpp.dll`
-- `target/release/whisper_ct2.dll`
+- `target/release/whisper_cpp.dll` - Whisper backend
+- `target/release/whisper_ct2.dll` - Faster Whisper backend  
+- `target/release/mistralrs_backend.dll` - Voxtral backend
 
 ## Packaging
 

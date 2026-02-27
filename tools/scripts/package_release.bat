@@ -42,14 +42,15 @@ if exist dist rmdir /s /q dist
 mkdir %RELEASE_DIR%
 mkdir %RELEASE_DIR%\backends\whisper-cpp
 mkdir %RELEASE_DIR%\backends\whisper-ct2
+mkdir %RELEASE_DIR%\backends\mistralrs
 
 echo.
-echo [1/4] Building main application...
+echo [1/5] Building main application...
 cargo build -p app --release || goto :error
 echo [OK] app.exe
 
 echo.
-echo [2/4] Building whisper-cpp backend...
+echo [2/5] Building whisper-cpp backend...
 if "%BUILD_TYPE%"=="cuda" (
     cargo build -p whisper-cpp --release --features cuda || goto :error
 ) else (
@@ -58,7 +59,7 @@ if "%BUILD_TYPE%"=="cuda" (
 echo [OK] whisper_cpp.dll
 
 echo.
-echo [3/4] Building whisper-ct2 backend...
+echo [3/5] Building whisper-ct2 backend...
 set RUSTFLAGS=-C target-feature=+crt-static
 if "%BUILD_TYPE%"=="cuda" (
     cargo build -p whisper-ct2 --release --features cuda || goto :error
@@ -69,7 +70,16 @@ set RUSTFLAGS=
 echo [OK] whisper_ct2.dll
 
 echo.
-echo [4/4] Packaging release...
+echo [4/5] Building mistralrs Voxtral backend...
+if "%BUILD_TYPE%"=="cuda" (
+    cargo build -p mistralrs-backend --release --features cuda || goto :error
+) else (
+    cargo build -p mistralrs-backend --release || goto :error
+)
+echo [OK] mistralrs_backend.dll
+
+echo.
+echo [5/5] Packaging release...
 
 REM Copy main executable
 copy target\release\app.exe %RELEASE_DIR%\ || goto :error
@@ -81,6 +91,10 @@ copy crates\backends\whisper-cpp\manifest.json %RELEASE_DIR%\backends\whisper-cp
 REM Copy whisper-ct2 backend
 copy target\release\whisper_ct2.dll %RELEASE_DIR%\backends\whisper-ct2\ || goto :error
 copy crates\backends\whisper-ct2\manifest.json %RELEASE_DIR%\backends\whisper-ct2\ || goto :error
+
+REM Copy mistralrs Voxtral backend
+copy target\release\mistralrs_backend.dll %RELEASE_DIR%\backends\mistralrs\ || goto :error
+copy crates\backends\mistralrs\manifest.json %RELEASE_DIR%\backends\mistralrs\ || goto :error
 
 REM Create README
 (
@@ -136,12 +150,16 @@ echo.
 echo backends\whisper-ct2:
 dir /b %RELEASE_DIR%\backends\whisper-ct2
 echo.
+echo backends\mistralrs:
+dir /b %RELEASE_DIR%\backends\mistralrs
+echo.
 
 REM Show file sizes
 echo File sizes:
 for %%F in (%RELEASE_DIR%\app.exe) do echo   app.exe: %%~zF bytes
 for %%F in (%RELEASE_DIR%\backends\whisper-cpp\whisper_cpp.dll) do echo   whisper_cpp.dll: %%~zF bytes
 for %%F in (%RELEASE_DIR%\backends\whisper-ct2\whisper_ct2.dll) do echo   whisper_ct2.dll: %%~zF bytes
+for %%F in (%RELEASE_DIR%\backends\mistralrs\mistralrs_backend.dll) do echo   mistralrs_backend.dll: %%~zF bytes
 for %%F in (dist\%RELEASE_NAME%.zip) do echo   Total zip: %%~zF bytes
 
 goto :end

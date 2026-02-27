@@ -22,19 +22,29 @@ set CMAKE_INCLUDE_PATH=C:/PROGRA~1/NVIDIA/CUDNN/v9.18/include/13.1
 set CMAKE_LIBRARY_PATH=C:/PROGRA~1/NVIDIA/CUDNN/v9.18/lib/13.1/x64
 set CUDA_ARCH_LIST=89
 
-echo [1/3] Building main application...
+echo [1/4] Building main application...
 cargo build -p app --release || exit /b 1
 echo [OK] app.exe
 
-echo [2/3] Building whisper-cpp backend (CUDA)...
+echo [2/4] Building whisper-cpp backend (CUDA)...
 cargo build -p whisper-cpp --release --features cuda || exit /b 1
 echo [OK] whisper_cpp.dll
 
-echo [3/3] Building whisper-ct2 backend (CUDA)...
+echo [3/4] Building whisper-ct2 backend (CUDA)...
 set RUSTFLAGS=-C target-feature=+crt-static
 cargo build -p whisper-ct2 --release --features cuda || exit /b 1
 set RUSTFLAGS=
 echo [OK] whisper_ct2.dll
+
+echo [4/4] Building mistralrs Voxtral backend (CUDA)...
+REM Set CUDA paths for mistralrs build (must use CUDA 13.0, not 10.1)
+set CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0
+set CUDA_HOME=%CUDA_PATH%
+set CUDA_ROOT=%CUDA_PATH%
+REM Update PATH to put CUDA 13.0 first
+set PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin;%PATH%
+cargo build -p mistralrs-backend --release --features cuda || exit /b 1
+echo [OK] mistralrs_backend.dll
 
 echo.
 echo ========================================

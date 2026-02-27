@@ -13,19 +13,23 @@ call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build
 set LIBCLANG_PATH=C:\Program Files\LLVM\bin
 set CMAKE_GENERATOR=Visual Studio 17 2022
 
-echo [1/3] Building main application...
+echo [1/4] Building main application...
 cargo build -p app --release || exit /b 1
 echo [OK] app.exe
 
-echo [2/3] Building whisper-cpp backend...
+echo [2/4] Building whisper-cpp backend...
 cargo build -p whisper-cpp --release || exit /b 1
 echo [OK] whisper_cpp.dll
 
-echo [3/3] Building whisper-ct2 backend...
+echo [3/4] Building whisper-ct2 backend...
 set RUSTFLAGS=-C target-feature=+crt-static
 cargo build -p whisper-ct2 --release || exit /b 1
 set RUSTFLAGS=
 echo [OK] whisper_ct2.dll
+
+echo [4/4] Building mistralrs Voxtral backend...
+cargo build -p mistralrs-backend --release || exit /b 1
+echo [OK] mistralrs_backend.dll
 
 echo.
 echo Build complete!
