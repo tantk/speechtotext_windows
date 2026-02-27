@@ -259,6 +259,26 @@ fn model_files_complete(config: &Config) -> Result<bool> {
     Ok(true)
 }
 
+fn resolve_model_load_path(config: &Config, backend: &LoadedBackend) -> std::path::PathBuf {
+    // whisper.cpp expects a model file path (e.g. ggml-base.bin), while other backends
+    // may expect a model directory.
+    if let Some(model) = backend
+        .manifest
+        .models
+        .iter()
+        .find(|m| m.id == config.model_name)
+    {
+        if config.model_path.is_dir() && model.files.len() == 1 {
+            let candidate = config.model_path.join(&model.files[0]);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    config.model_path.clone()
+}
+
 /// Show an error dialog to the user (Windows native message box)
 #[cfg(windows)]
 fn show_error_dialog(title: &str, message: &str) {
@@ -316,6 +336,11 @@ fn transcribe_and_type(
                     let trimmed = text.trim().to_string();
                     if trimmed.is_empty() {
                         info!("No speech detected");
+                        let _ = proxy.send_event(UserEvent::TranscriptionComplete(app_status));
+                        return;
+                    }
+                    if is_placeholder_transcript(&trimmed) {
+                        info!("No speech detected (placeholder transcript)");
                         let _ = proxy.send_event(UserEvent::TranscriptionComplete(app_status));
                         return;
                     }
@@ -422,6 +447,38 @@ struct PartialState {
 
 fn normalize_partial(text: &str) -> String {
     text.trim().to_lowercase()
+}
+
+fn is_placeholder_transcript(text: &str) -> bool {
+    const PLACEHOLDERS: [&str; 4] = ["[BLANK_AUDIO]", "[NO_SPEECH]", "<|NOSPEECH|>", "[SILENCE]"];
+
+    let compact = text
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase();
+
+    if compact.is_empty() {
+        return false;
+    }
+
+    let mut remaining = compact.as_str();
+    loop {
+        let mut matched = false;
+        for token in PLACEHOLDERS {
+            if let Some(rest) = remaining.strip_prefix(token) {
+                remaining = rest;
+                matched = true;
+                break;
+            }
+        }
+
+        if !matched {
+            break;
+        }
+    }
+
+    remaining.is_empty()
 }
 
 fn looks_like_url(text: &str) -> bool {
@@ -535,27 +592,36 @@ fn run_app(mut config: Config) -> Result<()> {
         config.use_gpu = false;
     }
 
+    let model_load_path = resolve_model_load_path(&config, &backend);
+
     // Log model input state before creation
     info!(
         "Model load request (path={}, use_gpu={}, backend_cuda={})",
-        config.model_path.display(),
+        model_load_path.display(),
         config.use_gpu,
         backend.supports_cuda_runtime()
     );
 
-    for filename in [
-        "model.bin",
-        "config.json",
-        "preprocessor_config.json",
-        "tokenizer.json",
-        "vocabulary.txt",
-    ] {
-        let path = config.model_path.join(filename);
-        info!("Model file check: {} exists={}", path.display(), path.exists());
+    if let Some(model) = backend
+        .manifest
+        .models
+        .iter()
+        .find(|m| m.id == config.model_name)
+    {
+        for filename in &model.files {
+            let path = config.model_path.join(filename);
+            info!("Model file check: {} exists={}", path.display(), path.exists());
+        }
+    } else {
+        info!(
+            "Model file check: {} exists={}",
+            model_load_path.display(),
+            model_load_path.exists()
+        );
     }
 
     // Create model (with GPU->CPU fallback)
-    let model = match backend.create_model(&config.model_path, config.use_gpu) {
+    let model = match backend.create_model(&model_load_path, config.use_gpu) {
         Ok(m) => {
             let device_used = if config.use_gpu { "CUDA" } else { "CPU" };
             info!(
@@ -572,7 +638,7 @@ fn run_app(mut config: Config) -> Result<()> {
                     "GPU model load failed: {}. Retrying on CPU...",
                     e
                 );
-                match backend.create_model(&config.model_path, false) {
+                match backend.create_model(&model_load_path, false) {
                     Ok(m) => {
                         config.use_gpu = false;
                         info!(
@@ -587,7 +653,7 @@ fn run_app(mut config: Config) -> Result<()> {
                             "Model Error",
                             &format!(
                                 "Failed to load model '{}'.\n\nGPU error:\n{}\n\nCPU error:\n{}\n\nPlease try re-downloading the model from settings.",
-                                config.model_path.display(),
+                                model_load_path.display(),
                                 e,
                                 cpu_e
                             ),
@@ -601,7 +667,7 @@ fn run_app(mut config: Config) -> Result<()> {
                     "Model Error",
                     &format!(
                         "Failed to load model '{}':\n{}\n\nPlease try re-downloading the model from settings.",
-                        config.model_path.display(),
+                        model_load_path.display(),
                         e
                     ),
                 );
@@ -993,9 +1059,7 @@ fn run_app(mut config: Config) -> Result<()> {
                         // Save current state before opening settings
                         info!("Opening settings...");
                         let (x, y) = overlay.get_position();
-                        config.overlay_x = Some(x);
-                        config.overlay_y = Some(y);
-                        if let Err(e) = config.save() {
+                        if let Err(e) = save_overlay_position(x, y) {
                             error!("Failed to save config: {}", e);
                         }
                         // Launch setup wizard in a separate process so the app keeps running
@@ -1100,9 +1164,7 @@ fn run_app(mut config: Config) -> Result<()> {
                                     // Save current state before opening settings
                                     info!("Opening settings from overlay...");
                                     let (x, y) = overlay.get_position();
-                                    config.overlay_x = Some(x);
-                                    config.overlay_y = Some(y);
-                                    if let Err(e) = config.save() {
+                                    if let Err(e) = save_overlay_position(x, y) {
                                         error!("Failed to save config: {}", e);
                                     }
                                     // Launch setup wizard in a separate process
@@ -1122,9 +1184,7 @@ fn run_app(mut config: Config) -> Result<()> {
                                     }
                                     // Save overlay position before exit
                                     let (x, y) = overlay.get_position();
-                                    config.overlay_x = Some(x);
-                                    config.overlay_y = Some(y);
-                                    if let Err(e) = config.save() {
+                                    if let Err(e) = save_overlay_position(x, y) {
                                         error!("Failed to save config: {}", e);
                                     }
                                     running.store(false, Ordering::SeqCst);
@@ -1146,10 +1206,24 @@ fn run_app(mut config: Config) -> Result<()> {
     });
 }
 
+fn sanitize_overlay_position(x: i32, y: i32) -> Option<(i32, i32)> {
+    // Windows reports minimized windows around (-32000, -32000); never persist that.
+    if x <= -30_000 || y <= -30_000 {
+        None
+    } else {
+        Some((x, y))
+    }
+}
+
 fn save_overlay_position(x: i32, y: i32) -> Result<()> {
     let mut cfg = Config::load()?;
-    cfg.overlay_x = Some(x);
-    cfg.overlay_y = Some(y);
+    if let Some((x, y)) = sanitize_overlay_position(x, y) {
+        cfg.overlay_x = Some(x);
+        cfg.overlay_y = Some(y);
+    } else {
+        cfg.overlay_x = None;
+        cfg.overlay_y = None;
+    }
     cfg.save()
 }
 

@@ -85,7 +85,7 @@ checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
 name = "app"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "app-core",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "app-core"
-version = "0.1.0"
+version = "0.1.4"
 
 [[package]]
 name = "arbitrary"
@@ -5451,7 +5451,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "whisper-cpp"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "app-core",
  "whisper-rs",
@@ -5459,7 +5459,7 @@ dependencies = [
 
 [[package]]
 name = "whisper-ct2"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "app-core",
  "ct2rs",

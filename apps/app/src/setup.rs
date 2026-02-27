@@ -981,12 +981,12 @@ fn get_home_buttons(state: &SetupState) -> Vec<ButtonRect> {
 fn get_cuda_page_buttons(_state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
 
-    // Close button at bottom (same position as Start button on home page)
+    // Close button at bottom (must match render_cuda_page)
     buttons.push(ButtonRect {
-        x: 175,
-        y: 440,
-        width: 150,
-        height: 45,
+        x: HOTKEY_CLOSE_X,
+        y: HOTKEY_CLOSE_Y,
+        width: HOTKEY_CLOSE_W,
+        height: HOTKEY_CLOSE_H,
         button: Button::Close,
     });
 
@@ -1097,12 +1097,12 @@ fn get_audio_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
 fn get_model_page_buttons(state: &SetupState) -> Vec<ButtonRect> {
     let mut buttons = Vec::new();
 
-    // Close button at bottom
+    // Close button at bottom (must match render_model_page)
     buttons.push(ButtonRect {
-        x: 175,
-        y: 440,
-        width: 150,
-        height: 45,
+        x: HOTKEY_CLOSE_X,
+        y: HOTKEY_CLOSE_Y,
+        width: HOTKEY_CLOSE_W,
+        height: HOTKEY_CLOSE_H,
         button: Button::Close,
     });
 

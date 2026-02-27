@@ -15,7 +15,13 @@ use tao::platform::windows::WindowExtWindows;
 // Default overlay dimensions
 const OVERLAY_WIDTH: u32 = 120;
 const OVERLAY_HEIGHT: u32 = 50;
+const WINDOWS_MINIMIZED_COORD_THRESHOLD: i32 = -30_000;
 const WINDOW_ICON_PNG: &[u8] = include_bytes!("../assets/mic_gray.png");
+
+fn is_valid_saved_position(x: i32, y: i32) -> bool {
+    // Windows reports minimized windows around (-32000, -32000). Treat these as invalid.
+    x > WINDOWS_MINIMIZED_COORD_THRESHOLD && y > WINDOWS_MINIMIZED_COORD_THRESHOLD
+}
 
 fn load_window_icon() -> Option<Icon> {
     let img = image::load_from_memory(WINDOW_ICON_PNG).ok()?;
@@ -52,7 +58,7 @@ impl Overlay {
 
         // Set position: use saved position if available, otherwise default to bottom-left
         match (saved_x, saved_y) {
-            (Some(x), Some(y)) => {
+            (Some(x), Some(y)) if is_valid_saved_position(x, y) => {
                 window.set_outer_position(PhysicalPosition::new(x, y));
             }
             _ => {
@@ -268,6 +274,7 @@ mod tests {
             AppStatus::Recording => "🎤 LISTENING",
             AppStatus::Processing => "Processing...",
             AppStatus::AlwaysListening => "Always On",
+            AppStatus::AlwaysListeningRecording => "🎤 SPEAKING",
         };
         assert_eq!(title_idle, "Idle");
         
@@ -276,6 +283,7 @@ mod tests {
             AppStatus::Recording => "🎤 LISTENING",
             AppStatus::Processing => "Processing...",
             AppStatus::AlwaysListening => "Always On",
+            AppStatus::AlwaysListeningRecording => "🎤 SPEAKING",
         };
         assert_eq!(title_recording, "🎤 LISTENING");
     }
@@ -327,5 +335,14 @@ mod tests {
             let _: AppStatus = from;
             let _: AppStatus = to;
         }
+    }
+
+    #[test]
+    fn test_saved_position_validation() {
+        assert!(is_valid_saved_position(100, 100));
+        assert!(is_valid_saved_position(0, 0));
+        assert!(!is_valid_saved_position(-32000, -32000));
+        assert!(!is_valid_saved_position(-32000, 100));
+        assert!(!is_valid_saved_position(100, -32000));
     }
 }
