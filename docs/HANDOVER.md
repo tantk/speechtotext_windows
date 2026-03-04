@@ -211,21 +211,15 @@ Created `build_whisper_ct2_cuda_fast.bat` for faster development builds:
 
 ## Known Issues / TODO
 
-1. **Always-Listen Mode** (In Progress)
-   - Core implementation complete but not fully integrated
-   - Need to connect to transcription pipeline
-   - Need UI controls for VAD parameters
-   - Need visual indicator for always-listen state
-
-2. **DPI Scaling**
+1. **DPI Scaling**
    - UI may need testing on high-DPI displays
    - softbuffer handles physical pixels, may need DPI awareness
 
-3. **cuDNN Path Structure**
+2. **cuDNN Path Structure**
    - cuDNN 9.x has complex structure: `CUDNN/v9.18/bin/13.1/`
    - Detection updated but may need more testing
 
-4. **Model Download**
+3. **Model Download**
    - Downloads models to exe-relative `models/` directory
    - Backend DLLs expected in `backends/<name>/` relative to exe
    - Checksum verification added but manifests need SHA256 values populated
@@ -239,6 +233,7 @@ Created `build_whisper_ct2_cuda_fast.bat` for faster development builds:
 | `tray-icon` | System tray |
 | `global-hotkey` | Global hotkey capture |
 | `enigo` | Keyboard simulation |
+| `arboard` | Clipboard access (for reliable text pasting) |
 | `cpal` | Audio capture |
 | `libloading` | Dynamic DLL loading |
 | `rfd` | Folder picker dialogs |

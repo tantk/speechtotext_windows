@@ -718,40 +718,6 @@ mod tests {
         println!("✓ whisper-ct2 backend loaded successfully");
     }
 
-    /// Test loading mistralrs Voxtral backend DLL
-    ///
-    /// Run with: cargo test test_mistralrs_backend_load -- --ignored
-    #[test]
-    #[ignore = "Requires built DLL - run manually after building backends"]
-    fn test_mistralrs_backend_load() {
-        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .unwrap()
-            .to_path_buf();
-        
-        let backend_dir = project_root.join("crates/backends/mistralrs");
-        let dll_path = project_root.join("target/release/mistralrs_backend.dll");
-        
-        assert!(dll_path.exists(), "mistralrs_backend.dll not found. Build with: cargo build --release -p mistralrs");
-        
-        let dest_dll = backend_dir.join("mistralrs_backend.dll");
-        std::fs::copy(&dll_path, &dest_dll).expect("Failed to copy DLL");
-        
-        let backend = LoadedBackend::load(&backend_dir);
-        let _ = std::fs::remove_file(&dest_dll);
-        
-        let backend = backend.expect("Failed to load mistralrs backend");
-        assert_eq!(backend.id, "mistralrs");
-        assert_eq!(backend.display_name, "Voxtral (mistral.rs)");
-        assert!(backend.supports_cuda());
-        
-        println!("✓ mistralrs backend loaded successfully");
-        println!("  ID: {}", backend.id);
-        println!("  Name: {}", backend.display_name);
-        println!("  Supports CUDA: {}", backend.supports_cuda());
-    }
-
     /// Test creating a CPU model with whisper-cpp
     ///
     /// Run with: cargo test test_whisper_cpp_create_model_cpu -- --ignored

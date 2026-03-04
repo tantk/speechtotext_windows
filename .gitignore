@@ -6,5 +6,9 @@
 /config-*.json
 /config.json
 /hf_model*.json
+/release_assets
 Thumbs.db
 Desktop.ini
+
+# Downloaded models in app directory
+apps/app/models/

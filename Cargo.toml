@@ -5,11 +5,10 @@ members = [
     "apps/app",
     "crates/backends/whisper-ct2",
     "crates/backends/whisper-cpp",
-    "crates/backends/mistralrs",
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 
 [workspace.dependencies]

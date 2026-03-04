@@ -26,6 +26,9 @@ global-hotkey = "0.6"
 # Keyboard simulation
 enigo = "0.2"
 
+# Clipboard access for reliable text pasting
+arboard = "3"
+
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -88,18 +88,6 @@ pub fn get_exe_stem() -> Result<String> {
     Ok(stem.to_string())
 }
 
-/// Get the named restart event for this executable instance.
-pub fn get_restart_event_name() -> Result<String> {
-    Ok(format!("SpeechWindowsRestart-{}", get_exe_stem()?))
-}
-
-#[cfg(target_os = "windows")]
-pub fn to_wide(s: &str) -> Vec<u16> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(Some(0)).collect()
-}
-
 /// Get the models directory (next to exe)
 pub fn get_models_dir() -> Result<PathBuf> {
     Ok(get_exe_dir()?.join("models"))

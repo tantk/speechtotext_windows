@@ -168,7 +168,8 @@ tools/scripts/package_only.bat
 | `softbuffer` | Pixel buffer rendering for UI |
 | `tray-icon` | System tray integration |
 | `global-hotkey` | Global hotkey capture |
-| `enigo` | Keyboard text injection |
+| `enigo` | Keyboard simulation (fallback) |
+| `arboard` | Clipboard access (primary text output) |
 | `cpal` | Audio capture |
 | `libloading` | Dynamic DLL loading |
 | `rfd` | Native file/folder dialogs |

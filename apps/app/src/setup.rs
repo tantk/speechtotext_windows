@@ -1,6 +1,6 @@
 use crate::backend_loader::{discover_backends, get_backends_dir, BackendManifest, ManifestModel};
 use crate::config::{
-    detect_cuda_path, detect_cudnn_path, get_exe_stem, get_models_dir, get_restart_event_name,
+    detect_cuda_path, detect_cudnn_path, get_models_dir,
     validate_cuda_path, validate_cudnn_path, Config,
 };
 use crate::downloader::{self, DownloadProgress};
@@ -14,14 +14,6 @@ use tao::event::{ElementState, Event, MouseButton, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::keyboard::{KeyCode, ModifiersState};
 use tao::window::{Icon, WindowBuilder};
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
-#[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::{
-    CreateMutexW, OpenEventW, SetEvent, EVENT_MODIFY_STATE,
-};
-#[cfg(target_os = "windows")]
-use windows::core::PCWSTR;
 
 const WINDOW_WIDTH: u32 = 500;
 const WINDOW_HEIGHT: u32 = 600;
@@ -82,9 +74,6 @@ enum HotkeyCapture {
 
 struct SetupState {
     current_page: SetupPage,
-
-    // Whether we're launched from settings (app already running)
-    from_settings: bool,
 
     // Backend info (for looking up DLL paths, etc.)
     available_backends: Vec<BackendManifest>,
@@ -189,7 +178,7 @@ const VISIBLE_DEVICES: usize = 6;
 const DEFAULT_DEVICE_LABEL: &str = "<Default device>";
 
 impl SetupState {
-    fn new(from_settings: bool) -> Self {
+    fn new() -> Self {
         let existing_config = Config::load().ok();
 
         // Load audio input devices
@@ -277,7 +266,6 @@ impl SetupState {
 
         Self {
             current_page: SetupPage::Home,
-            from_settings,
             available_backends,
             all_models,
             selected_model,
@@ -405,55 +393,10 @@ fn load_window_icon() -> Option<Icon> {
     Icon::from_rgba(rgba, width, height).ok()
 }
 
-#[cfg(target_os = "windows")]
-fn acquire_setup_lock() -> Option<HANDLE> {
-    let name = match get_exe_stem() {
-        Ok(stem) => format!("SpeechWindowsSetup-{}", stem),
-        Err(_) => return None,
-    };
-    let wide = crate::config::to_wide(&name);
-    let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) };
-    let handle = match handle {
-        Ok(handle) => handle,
-        Err(_) => return None,
-    };
-    if handle.is_invalid() {
-        return None;
-    }
-    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        // Another setup wizard already running
-        let _ = unsafe { CloseHandle(handle) };
-        return None;
-    }
-    Some(handle)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn acquire_setup_lock() -> Option<()> {
-    Some(())
-}
-
-/// Run the setup wizard for initial setup (spawns new process on completion)
-pub fn run_setup() -> ! {
-    run_setup_inner(false)
-}
-
-/// Run the setup wizard from settings menu (just exits on completion, no new process)
-pub fn run_setup_from_settings() -> ! {
-    run_setup_inner(true)
-}
-
 /// Run the setup wizard. This function never returns - it either:
-/// 1. Spawns a new process with the config and exits (if from_settings is false), or
-/// 2. Just exits (if from_settings is true, since app is already running), or
-/// 3. User closes the window and exits
-fn run_setup_inner(from_settings: bool) -> ! {
-    // Prevent multiple setup wizards from running at once
-    let _setup_lock = acquire_setup_lock();
-    if _setup_lock.is_none() {
-        std::process::exit(0);
-    }
-
+/// 1. Saves config, spawns app.exe, and exits (user clicks Start), or
+/// 2. User closes the window and exits
+pub fn run_setup() -> ! {
     let event_loop = EventLoopBuilder::<SetupEvent>::with_user_event().build();
     let window_icon = load_window_icon();
 
@@ -472,7 +415,7 @@ fn run_setup_inner(from_settings: bool) -> ! {
     let mut surface =
         softbuffer::Surface::new(&context, window.clone()).expect("Failed to create softbuffer surface");
 
-    let mut state = SetupState::new(from_settings);
+    let mut state = SetupState::new();
 
     let proxy = event_loop.create_proxy();
 
@@ -840,31 +783,6 @@ fn keycode_to_string(keycode: KeyCode, modifiers: &ModifiersState) -> Option<Str
 
     parts.push(key_name);
     Some(parts.join("+"))
-}
-
-#[cfg(target_os = "windows")]
-fn signal_restart_event() -> bool {
-    let name = match get_restart_event_name() {
-        Ok(name) => name,
-        Err(_) => return false,
-    };
-    let wide = crate::config::to_wide(&name);
-    let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(wide.as_ptr())) };
-    let handle = match handle {
-        Ok(handle) => handle,
-        Err(_) => return false,
-    };
-    if handle.is_invalid() {
-        return false;
-    }
-    let _ = unsafe { SetEvent(handle) };
-    let _ = unsafe { CloseHandle(handle) };
-    true
-}
-
-#[cfg(not(target_os = "windows"))]
-fn signal_restart_event() -> bool {
-    false
 }
 
 fn get_button_rects(state: &SetupState) -> Vec<ButtonRect> {
@@ -1345,28 +1263,11 @@ fn handle_click(state: &mut SetupState, button: Button) -> Option<SetupEvent> {
                     state.status = format!("Error saving config: {}", e);
                     return None;
                 }
-                if state.from_settings {
-                    // Restart running app to apply changes
-                    let signaled = signal_restart_event();
-                    if signaled {
-                        if let Ok(exe) = std::env::current_exe() {
-                            let _ = std::process::Command::new(exe)
-                                .arg("--delay-start")
-                                .spawn();
-                        }
-                        Some(SetupEvent::ExitWithoutConfig)
-                    } else {
-                        state.status =
-                            "Saved. Failed to restart app; please restart manually.".to_string();
-                        None
-                    }
-                } else {
-                    // Initial setup - launch the app
-                    if let Ok(exe) = std::env::current_exe() {
-                        let _ = std::process::Command::new(exe).spawn();
-                    }
-                    Some(SetupEvent::Exit(config))
+                // Launch app normally and exit setup
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).spawn();
                 }
+                Some(SetupEvent::Exit(config))
             } else {
                 state.status = "Error: Could not get models directory".to_string();
                 None
@@ -1769,8 +1670,7 @@ fn render_home_page(state: &SetupState, buffer: &mut [u32], width: u32, _height:
         0xFF333355
     };
     draw_rect(buffer, width, 175, 530, 150, 45, start_bg);
-    let start_label = if state.from_settings { "Save" } else { "Start" };
-    draw_text(buffer, width, 222, 548, start_label, TEXT_COLOR);
+    draw_text(buffer, width, 222, 548, "Start", TEXT_COLOR);
 }
 
 
@@ -2402,7 +2302,6 @@ mod tests {
         // Create a mock state for button rect generation
         let state = SetupState {
             current_page: SetupPage::Home,
-            from_settings: false,
             available_backends: vec![],
             all_models: vec![],
             selected_model: None,

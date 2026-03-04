@@ -14,7 +14,7 @@ mod typer;
 
 use anyhow::Result;
 use backend_loader::LoadedBackend;
-use config::{get_exe_stem, get_restart_event_name, setup_cuda_env, Config};
+use config::{get_exe_stem, setup_cuda_env, Config};
 use cpal::traits::StreamTrait;
 use hotkeys::{check_hotkey_event, HotkeyAction, HotkeyManager};
 use overlay::Overlay;
@@ -29,12 +29,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tray::AppStatus;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, WAIT_OBJECT_0,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::{
-    CreateEventW, CreateMutexW, WaitForSingleObject,
-};
+use windows::Win32::System::Threading::CreateMutexW;
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
@@ -154,17 +152,7 @@ fn show_overlay_context_menu(hwnd: HWND) -> Option<u32> {
 }
 
 fn main() -> Result<()> {
-    // Check for --setup-only flag (used when opening settings from running app)
-    // This runs just the setup wizard without acquiring the mutex
-    if std::env::args().any(|arg| arg == "--setup-only") {
-        setup::run_setup_from_settings();
-    }
-
-    // Check for --delay-start flag (used when restarting from settings)
-    // This gives the previous process time to exit and release the mutex
-    if std::env::args().any(|arg| arg == "--delay-start") {
-        std::thread::sleep(Duration::from_millis(500));
-    }
+    let setup_mode = std::env::args().any(|arg| arg == "--setup");
 
     #[cfg(target_os = "windows")]
     let _instance_lock = {
@@ -199,6 +187,13 @@ fn main() -> Result<()> {
     info!("  Speech-to-Text for Windows");
     info!("========================================");
     info!("Log file: {}", log_dir.join(log_name).display());
+
+    // --setup flag: run setup wizard then exit (used for settings flow)
+    if setup_mode {
+        info!("Running setup wizard (--setup mode)...");
+        // run_setup() never returns - it saves config, spawns app.exe, and exits
+        setup::run_setup();
+    }
 
     // Check if config exists and model is available
     let config = match Config::load() {
@@ -770,38 +765,6 @@ fn run_app(mut config: Config) -> Result<()> {
     let always_listen_partial = Arc::new(Mutex::new(PartialState::default()));
     let running = Arc::new(AtomicBool::new(true));
 
-    // Restart signal (from settings wizard)
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(name) = get_restart_event_name() {
-            let wide = config::to_wide(&name);
-            let handle = unsafe { CreateEventW(None, false, false, PCWSTR(wide.as_ptr())) };
-            match handle {
-                Ok(handle) => {
-                    if handle.is_invalid() {
-                        warn!("Failed to create restart event: {:?}", unsafe { GetLastError() });
-                    } else {
-                        let handle_value = handle.0 as usize;
-                        let restart_proxy = proxy.clone();
-                        std::thread::spawn(move || {
-                            let handle = HANDLE(handle_value as *mut _);
-                            let wait = unsafe { WaitForSingleObject(handle, u32::MAX) };
-                            if wait == WAIT_OBJECT_0 {
-                                let _ = restart_proxy.send_event(UserEvent::RestartRequested);
-                            }
-                            let _ = unsafe { CloseHandle(handle) };
-                        });
-                    }
-                }
-                Err(_) => {
-                    warn!("Failed to create restart event");
-                }
-            }
-        } else {
-            warn!("Failed to compute restart event name");
-        }
-    }
-
     // Always-listen state
     let always_listen_active = Arc::new(AtomicBool::new(false));
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<f32>>(100);
@@ -1056,18 +1019,26 @@ fn run_app(mut config: Config) -> Result<()> {
                     if menu_id == show_overlay_id {
                         overlay.toggle_visibility();
                     } else if menu_id == settings_id {
-                        // Save current state before opening settings
-                        info!("Opening settings...");
+                        // Save state, launch setup wizard, and exit
+                        info!("Opening settings (restarting into setup mode)...");
+                        // Stop always-listen
+                        always_listen_active.store(false, Ordering::SeqCst);
+                        always_listen_stream_running.store(false, Ordering::SeqCst);
+                        if let Some(ref stream) = always_listen_stream {
+                            let _ = stream.pause();
+                        }
                         let (x, y) = overlay.get_position();
                         if let Err(e) = save_overlay_position(x, y) {
                             error!("Failed to save config: {}", e);
                         }
-                        // Launch setup wizard in a separate process so the app keeps running
+                        // Spawn setup wizard and exit current process
                         if let Ok(exe) = std::env::current_exe() {
                             let _ = std::process::Command::new(exe)
-                                .arg("--setup-only")
+                                .arg("--setup")
                                 .spawn();
                         }
+                        running.store(false, Ordering::SeqCst);
+                        *control_flow = ControlFlow::Exit;
                     } else if menu_id == exit_id {
                         info!("Exiting...");
                         // Stop always-listen
@@ -1084,22 +1055,6 @@ fn run_app(mut config: Config) -> Result<()> {
                         running.store(false, Ordering::SeqCst);
                         *control_flow = ControlFlow::Exit;
                     }
-                }
-                UserEvent::RestartRequested => {
-                    info!("Restart requested from settings...");
-                    // Stop always-listen
-                    always_listen_active.store(false, Ordering::SeqCst);
-                    always_listen_stream_running.store(false, Ordering::SeqCst);
-                    if let Some(ref stream) = always_listen_stream {
-                        let _ = stream.pause();
-                    }
-                    // Save overlay position before exit
-                    let (x, y) = overlay.get_position();
-                    if let Err(e) = save_overlay_position(x, y) {
-                        error!("Failed to save config: {}", e);
-                    }
-                    running.store(false, Ordering::SeqCst);
-                    *control_flow = ControlFlow::Exit;
                 }
                 UserEvent::TranscriptionComplete(target_status) => {
                     let mode = *state.lock();
@@ -1161,18 +1116,26 @@ fn run_app(mut config: Config) -> Result<()> {
                                     overlay.toggle_visibility();
                                 }
                                 MENU_SETTINGS => {
-                                    // Save current state before opening settings
-                                    info!("Opening settings from overlay...");
+                                    // Save state, launch setup wizard, and exit
+                                    info!("Opening settings from overlay (restarting into setup mode)...");
+                                    // Stop always-listen
+                                    always_listen_active.store(false, Ordering::SeqCst);
+                                    always_listen_stream_running.store(false, Ordering::SeqCst);
+                                    if let Some(ref stream) = always_listen_stream {
+                                        let _ = stream.pause();
+                                    }
                                     let (x, y) = overlay.get_position();
                                     if let Err(e) = save_overlay_position(x, y) {
                                         error!("Failed to save config: {}", e);
                                     }
-                                    // Launch setup wizard in a separate process
+                                    // Spawn setup wizard and exit current process
                                     if let Ok(exe) = std::env::current_exe() {
                                         let _ = std::process::Command::new(exe)
-                                            .arg("--setup-only")
+                                            .arg("--setup")
                                             .spawn();
                                     }
+                                    running.store(false, Ordering::SeqCst);
+                                    *control_flow = ControlFlow::Exit;
                                 }
                                 MENU_EXIT => {
                                     info!("Exiting from overlay menu...");
@@ -1234,5 +1197,4 @@ enum UserEvent {
     TranscriptionComplete(AppStatus),
     AlwaysListenAudio(always_listen::AlwaysListenResult),
     AlwaysListenStateChange(bool), // true = recording, false = listening
-    RestartRequested,
 }
