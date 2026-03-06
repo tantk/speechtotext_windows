@@ -1,52 +1,94 @@
 # Speech-to-Text Windows
 
-Windows-native speech-to-text app with a pluggable backend system (Whisper and Faster Whisper), tray UI, and setup wizard for model downloads.
+A Windows-native speech-to-text application with real-time transcription, pluggable Whisper backends, and a system tray interface. Supports push-to-talk, continuous listening with voice activity detection, multilingual transcription, and audio file transcription to SRT subtitles.
+
+![Setup Wizard](speechtotext_windows.png)
+
+## Features
+
+### Speech Recognition
+- **Push-to-talk** - Hold a hotkey (default: `` ` ``) to record, release to transcribe
+- **Always-listen mode** - Toggle continuous listening (default: `` Ctrl+` ``) with automatic voice activity detection
+- **Multilingual support** - 99 Whisper-supported languages with auto-detection
+- **Translation** - Translate any language to English using Whisper's built-in translation
+- **Audio file transcription** - Transcribe audio files (MP3, WAV, FLAC, OGG, AAC) to SRT subtitles via `--transcribe`
+
+### Output
+- **Type to active window** - Transcribed text is automatically typed into the focused application
+- **Clipboard paste mode** - Uses clipboard for reliable text insertion
+- **Overlay** - Floating overlay shows recording/processing status with color-coded indicators
+- **Subtitle bar** - Draggable, resizable subtitle display with auto font detection for CJK scripts
+- **SRT subtitle export** - File transcription outputs standard SRT subtitle files with timestamps
+
+### Backends
+- **Faster Whisper (CTranslate2)** - High-performance inference with INT8/FP16 quantization
+- **Whisper.cpp** - Whisper via whisper.cpp with GGML models
+- **Pluggable backend system** - Backends are DLLs loaded at runtime, easy to add new ones
+- **GPU acceleration** - CUDA support with automatic CUDA/cuDNN detection
+
+### Models
+- Multiple model sizes from Tiny (75 MB) to Large v3 (3000 MB)
+- English-only and multilingual variants
+- One-click download from Hugging Face in the setup wizard
+
+### User Interface
+- **Setup wizard** - Tabbed egui interface for model selection, audio settings, hotkeys, and GPU configuration
+- **System tray** - Full-featured tray menu with language selection, audio source toggle, and settings access
+- **Configurable hotkeys** - Customizable push-to-talk and toggle-listen key bindings
+- **Tunable always-listen** - Adjustable silence timeout (0.1-5s) and streaming interval (0.2-3s)
+
+### Audio
+- **Microphone input** - Select from available input devices
+- **System audio capture** - Loopback recording of desktop audio
+- **16kHz mono resampling** - Automatic conversion from any sample rate
 
 ## Quick Start
 
 ```batch
-:: CPU build
+:: Build
 cargo build -p app --release
 
-:: Or use the helper script
-tools\scripts\build_win.bat
+:: Run (opens setup wizard on first launch)
+target\release\app.exe
+
+:: Transcribe an audio file to SRT
+target\release\app.exe --transcribe recording.mp3
+target\release\app.exe --transcribe recording.wav --output custom.srt
 ```
 
 ## Usage
 
-- Run `app.exe`, follow the setup wizard to select a model and configure hotkeys.
-- **Push-to-talk** (default: `` ` ``) records while held; release to transcribe.
-- **Toggle listen** (default: `` Ctrl+` ``) listens continuously using voice activity detection:
-  - Overlay turns **green** when listening for speech
-  - Overlay turns **red** when speech is detected and recording
-  - Overlay turns **yellow** during transcription processing
-  - Silence timeout is configurable (0.1–5 seconds, default 2s)
-  - Pseudo-streaming partial interval is configurable (200–3000 ms, default 1200 ms)
-- Microphone selection, silence timeout, and streaming interval are adjustable in the setup wizard.
-- Right-click the overlay or system tray icon for the context menu.
+1. Run `app.exe` - the setup wizard opens on first launch
+2. Select a model and click **Download**
+3. Configure audio source, language, and hotkeys in the tabs
+4. Click **Start** to launch the app
+5. Use the system tray icon to access settings and toggle features
+
+### Status Indicators
+| Color | Meaning |
+|-------|---------|
+| Gray | Idle |
+| Green | Always-listen mode active, waiting for speech |
+| Red | Recording / speech detected |
+| Yellow | Processing transcription |
 
 ## Config & Logs
 
-- Config is stored next to the exe: `config-<exe>.json` (e.g., `config-app.json`).
-- Logs are stored next to the exe: `app-<exe>.log`.
-- Running two copies of the same exe name is blocked; rename the exe to run multiple instances.
-- Setup wizard is single-instance per exe name.
+- Config: `config-<exe>.json` next to the executable
+- Logs: `app-<exe>.log` next to the executable
+- Multiple instances supported by renaming the exe
 
-## Structure
+## Project Structure
 
-- `apps/app` - main Windows GUI application
-- `crates/app-core` - shared FFI types
-- `crates/backends` - backend DLLs
-  - `whisper-cpp` - Whisper via whisper.cpp (GGML models)
-  - `whisper-ct2` - Faster Whisper via CTranslate2
-- `tools/scripts` - build and packaging scripts
-- `docs` - project documentation
-
-## Build Outputs
-
-- `target/release/app.exe`
-- `target/release/whisper_cpp.dll` - Whisper backend
-- `target/release/whisper_ct2.dll` - Faster Whisper backend
+```
+apps/app/              Main Windows GUI application
+crates/app-core/       Shared FFI types for backend plugins
+crates/backends/
+  whisper-cpp/         Whisper.cpp backend (GGML)
+  whisper-ct2/         Faster Whisper backend (CTranslate2)
+tools/scripts/         Build and packaging scripts
+docs/                  Project documentation
+```
 
 ## Packaging
 
@@ -57,5 +99,3 @@ tools\scripts\package_release.bat [cuda|cpu]
 ## Changelog
 
 See `CHANGELOG.md` for release notes.
-
-See `AGENTS.md` and `docs/CLAUDE.md` for contributor guidance.

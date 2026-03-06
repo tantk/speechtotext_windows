@@ -205,12 +205,35 @@ unsafe impl Sync for Model {}
 
 impl Model {
     /// Transcribe audio samples
-    pub fn transcribe(&self, audio: &[f32]) -> Result<String> {
+    pub fn transcribe(&self, audio: &[f32], language: Option<&str>) -> Result<String> {
+        self.transcribe_inner(audio, false, false, language)
+    }
+
+    /// Transcribe audio samples with timestamp tokens in the output
+    pub fn transcribe_with_timestamps(&self, audio: &[f32], language: Option<&str>) -> Result<String> {
+        self.transcribe_inner(audio, true, false, language)
+    }
+
+    /// Translate audio to English (no timestamps, for live mode)
+    pub fn translate(&self, audio: &[f32], language: Option<&str>) -> Result<String> {
+        self.transcribe_inner(audio, false, true, language)
+    }
+
+    /// Translate audio to English with timestamp tokens
+    pub fn translate_with_timestamps(&self, audio: &[f32], language: Option<&str>) -> Result<String> {
+        self.transcribe_inner(audio, true, true, language)
+    }
+
+    fn transcribe_inner(&self, audio: &[f32], timestamps: bool, translate: bool, language: Option<&str>) -> Result<String> {
         if audio.is_empty() {
             return Ok(String::new());
         }
 
-        let options = TranscribeOptions::default();
+        let lang_cstring = language.map(|l| CString::new(l).unwrap());
+        let mut options = TranscribeOptions::default();
+        options.timestamps = timestamps;
+        options.translate = translate;
+        options.language = lang_cstring.as_ref().map_or(ptr::null(), |c| c.as_ptr());
         let mut result = unsafe {
             (self.vtable.transcribe)(self.handle, audio.as_ptr(), audio.len(), &options)
         };

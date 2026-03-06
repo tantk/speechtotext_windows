@@ -11,6 +11,7 @@ const TARGET_SAMPLE_RATE: u32 = 16000;
 pub struct AudioCapture {
     device: Device,
     config: StreamConfig,
+    sample_format: SampleFormat,
     recording: Arc<AtomicBool>,
     buffer: Arc<Mutex<Vec<f32>>>,
     stream: Option<Stream>,
@@ -55,6 +56,7 @@ impl AudioCapture {
             .context("Failed to get default input config")?;
 
         debug!("Default config: {:?}", supported_config);
+        let sample_format = supported_config.sample_format();
 
         // Try to use 16kHz mono, fall back to device default
         let config = StreamConfig {
@@ -101,6 +103,43 @@ impl AudioCapture {
         Ok(Self {
             device,
             config,
+            sample_format,
+            recording: Arc::new(AtomicBool::new(false)),
+            buffer: Arc::new(Mutex::new(Vec::new())),
+            stream: None,
+        })
+    }
+
+    /// Create an AudioCapture that captures system audio via WASAPI loopback.
+    /// Uses the default output device — cpal sets AUDCLNT_STREAMFLAGS_LOOPBACK
+    /// automatically when build_input_stream() is called on an output device.
+    pub fn new_loopback() -> Result<Self> {
+        let host = cpal::default_host();
+
+        let device = host
+            .default_output_device()
+            .context("No output device available for loopback")?;
+
+        debug!("Loopback device: {:?}", device.name().unwrap_or_default());
+
+        // Loopback must use the device's native format
+        let supported_config = device
+            .default_output_config()
+            .context("Failed to get default output config")?;
+
+        debug!("Loopback config: {:?}", supported_config);
+        let sample_format = supported_config.sample_format();
+
+        let config = StreamConfig {
+            channels: supported_config.channels(),
+            sample_rate: supported_config.sample_rate(),
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        Ok(Self {
+            device,
+            config,
+            sample_format,
             recording: Arc::new(AtomicBool::new(false)),
             buffer: Arc::new(Mutex::new(Vec::new())),
             stream: None,
@@ -124,7 +163,7 @@ impl AudioCapture {
 
         let err_fn = |err| error!("Audio stream error: {}", err);
 
-        let stream = match self.device.default_input_config()?.sample_format() {
+        let stream = match self.sample_format {
             SampleFormat::F32 => self.device.build_input_stream(
                 &self.config,
                 move |data: &[f32], _| {
@@ -223,7 +262,7 @@ impl AudioCapture {
 
         let err_fn = |err| error!("Always-listen audio stream error: {}", err);
 
-        let stream = match self.device.default_input_config()?.sample_format() {
+        let stream = match self.sample_format {
             SampleFormat::F32 => self.device.build_input_stream(
                 &self.config,
                 move |data: &[f32], _| {
@@ -280,7 +319,7 @@ impl AudioCapture {
     }
 }
 
-fn convert_to_mono(data: &[f32], channels: usize) -> Vec<f32> {
+pub(crate) fn convert_to_mono(data: &[f32], channels: usize) -> Vec<f32> {
     if channels == 1 {
         return data.to_vec();
     }
@@ -290,7 +329,7 @@ fn convert_to_mono(data: &[f32], channels: usize) -> Vec<f32> {
         .collect()
 }
 
-fn resample(data: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+pub(crate) fn resample(data: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate {
         return data.to_vec();
     }

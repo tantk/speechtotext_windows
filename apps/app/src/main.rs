@@ -3,12 +3,17 @@
 
 mod always_listen;
 mod audio;
+mod audio_file;
 mod backend_loader;
 mod config;
 mod downloader;
 mod hotkeys;
+mod local_agreement;
 mod overlay;
 mod setup;
+mod srt;
+mod subtitle;
+mod transcribe_file;
 mod tray;
 mod typer;
 
@@ -16,6 +21,7 @@ use anyhow::Result;
 use backend_loader::LoadedBackend;
 use config::{get_exe_stem, setup_cuda_env, Config};
 use cpal::traits::StreamTrait;
+use cpal::Stream;
 use hotkeys::{check_hotkey_event, HotkeyAction, HotkeyManager};
 use overlay::Overlay;
 use parking_lot::Mutex;
@@ -152,20 +158,75 @@ fn show_overlay_context_menu(hwnd: HWND) -> Option<u32> {
 }
 
 fn main() -> Result<()> {
-    let setup_mode = std::env::args().any(|arg| arg == "--setup");
+    let args: Vec<String> = std::env::args().collect();
+    let setup_mode = args.iter().any(|arg| arg == "--setup");
+
+    // Check for --transcribe mode
+    let transcribe_file_path = args
+        .iter()
+        .position(|arg| arg == "--transcribe")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| std::path::PathBuf::from(s));
+
+    let output_path = args
+        .iter()
+        .position(|arg| arg == "--output")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| std::path::PathBuf::from(s));
+
+    // In --transcribe mode, attach a console for stdout in release builds
+    if transcribe_file_path.is_some() {
+        #[cfg(all(target_os = "windows", not(debug_assertions)))]
+        {
+            use windows::Win32::System::Console::AllocConsole;
+            unsafe {
+                let _ = AllocConsole();
+            }
+        }
+
+        // Initialize minimal logging to stderr
+        let log_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let log_name = format!("app-{}.log", get_exe_stem().unwrap_or_else(|_| "app".to_string()));
+        let file_appender = tracing_appender::rolling::never(&log_dir, log_name);
+        let (file_writer, _log_guard) = tracing_appender::non_blocking(file_appender);
+        init_logging(file_writer);
+
+        let input = transcribe_file_path.unwrap();
+        if !input.exists() {
+            eprintln!("Error: file not found: {}", input.display());
+            std::process::exit(1);
+        }
+
+        let output = output_path.unwrap_or_else(|| input.with_extension("srt"));
+
+        let config = Config::load().unwrap_or_else(|_| {
+            eprintln!("Error: no config found. Run the app normally first to set up a model.");
+            std::process::exit(1);
+        });
+
+        return transcribe_file::transcribe_file(&input, &output, &config);
+    }
 
     #[cfg(target_os = "windows")]
     let _instance_lock = {
-        let lock = acquire_instance_lock()?;
-        if lock.is_none() {
-            show_error_dialog(
-                "Already Running",
-                "Another instance with the same executable name is already running.",
-            );
-            return Ok(());
+        if setup_mode {
+            // Setup mode skips the instance lock because the main app may still
+            // be shutting down when it spawns `app.exe --setup`.
+            None
+        } else {
+            let lock = acquire_instance_lock()?;
+            if lock.is_none() {
+                show_error_dialog(
+                    "Already Running",
+                    "Another instance with the same executable name is already running.",
+                );
+                return Ok(());
+            }
+            lock
         }
-        // Keep lock alive for the lifetime of the process.
-        lock
     };
 
     // Initialize logging with file output
@@ -301,6 +362,23 @@ fn show_error_dialog(title: &str, message: &str) {
     error!("{}: {}", title, message);
 }
 
+/// Determine if Whisper translate mode should be used.
+/// Only translates when target is "en" and input is not English.
+fn should_translate(input_lang: &str, target_lang: &str) -> bool {
+    if target_lang == "original" {
+        return false;
+    }
+    // Whisper only supports translating TO English
+    if target_lang != "en" {
+        return false;
+    }
+    // No point translating English to English
+    if input_lang == "en" {
+        return false;
+    }
+    true
+}
+
 /// Transcription worker that processes audio and types the result
 fn transcribe_and_type(
     audio_data: Vec<f32>,
@@ -311,6 +389,11 @@ fn transcribe_and_type(
     app_status: AppStatus,
     partial_state: Option<Arc<Mutex<PartialState>>>,
     is_partial: bool,
+    translate: bool,
+    type_to_window: bool,
+    agreement: Option<Arc<Mutex<local_agreement::LocalAgreement>>>,
+    trim_tx: Option<crossbeam_channel::Sender<always_listen::AlwaysListenCommand>>,
+    input_language: Option<String>,
 ) {
     std::thread::spawn(move || {
         // Basic silence gating to avoid hallucinations on empty/near-silent audio.
@@ -320,12 +403,24 @@ fn transcribe_and_type(
         }
 
         info!(
-            "Transcribing {} samples (~{:.1}s of audio)...",
+            "{} {} samples (~{:.1}s of audio)...",
+            if translate { "Translating" } else { "Transcribing" },
             audio_data.len(),
             audio_data.len() as f32 / 16000.0
         );
 
-        match model.transcribe(&audio_data) {
+        let lang_ref = input_language.as_deref();
+        let use_timestamps = translate && agreement.is_some();
+        let result = if translate {
+            if use_timestamps {
+                model.translate_with_timestamps(&audio_data, lang_ref)
+            } else {
+                model.translate(&audio_data, lang_ref)
+            }
+        } else {
+            model.transcribe(&audio_data, lang_ref)
+        };
+        match result {
             Ok(text) => {
                 if !text.is_empty() {
                     let trimmed = text.trim().to_string();
@@ -340,7 +435,78 @@ fn transcribe_and_type(
                         return;
                     }
 
-                    if let Some(state) = partial_state.as_ref() {
+                    // --- Translate mode with LocalAgreement ---
+                    // Uses word-level comparison + timestamps for buffer trimming.
+                    // Partials: run through LocalAgreement, confirmed sentences get typed.
+                    // Final: type whatever hasn't been confirmed yet.
+                    if translate {
+                        if let Some(ref ag) = agreement {
+                            let mut la = ag.lock();
+                            if is_partial {
+                                let ar = la.process(&trimmed);
+
+                                // Show full text on subtitle (replace mode)
+                                let display = if ar.full_text.is_empty() { trimmed.clone() } else { ar.full_text };
+                                let _ = proxy.send_event(UserEvent::SubtitleReplace(display));
+
+                                // Type confirmed sentences
+                                if !ar.confirmed_new.is_empty() {
+                                    info!("LA confirmed: \"{}\"", ar.confirmed_new);
+                                    if type_to_window {
+                                        if let Err(e) = typer.lock().type_text(&ar.confirmed_new) {
+                                            error!("Failed to type confirmed: {}", e);
+                                        }
+                                    }
+                                    let _ = proxy.send_event(UserEvent::SubtitleText(ar.confirmed_new));
+                                }
+
+                                // Send trim command if we have a trim point
+                                if let Some(ts) = ar.trim_to {
+                                    if let Some(ref tx) = trim_tx {
+                                        let _ = tx.send(always_listen::AlwaysListenCommand::TrimBuffer(ts));
+                                    }
+                                }
+
+                                let _ = proxy.send_event(UserEvent::TranscriptionComplete(app_status));
+                                return;
+                            } else {
+                                // Final result — type the unconfirmed remainder
+                                let confirmed = la.confirmed_text();
+                                // Strip timestamp tokens for clean final text
+                                let clean = strip_timestamp_tokens(&trimmed);
+                                let remainder = if !confirmed.is_empty() && clean.starts_with(&confirmed) {
+                                    clean[confirmed.len()..].trim().to_string()
+                                } else {
+                                    clean
+                                };
+
+                                if !remainder.is_empty() {
+                                    info!("Final translate (remainder): \"{}\"", remainder);
+                                    if type_to_window {
+                                        if let Err(e) = typer.lock().type_text(&remainder) {
+                                            error!("Failed to type final: {}", e);
+                                        }
+                                    }
+                                }
+                                let _ = proxy.send_event(UserEvent::SubtitleText(trimmed.clone()));
+                                la.reset();
+                            }
+                        } else if let Some(state) = partial_state.as_ref() {
+                            // Fallback: old PartialState approach (push-to-talk translate)
+                            let _ = proxy.send_event(UserEvent::SubtitleText(trimmed.clone()));
+                            if !is_partial {
+                                info!("Final translate: \"{}\"", trimmed);
+                                if type_to_window {
+                                    if let Err(e) = typer.lock().type_text(&trimmed) {
+                                        error!("Failed to type: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // --- Regular transcription: suffix-based partial dedup ---
+                    else if let Some(state) = partial_state.as_ref() {
+                        let _ = proxy.send_event(UserEvent::SubtitleText(trimmed.clone()));
                         let mut st = state.lock();
                         if is_partial {
                             let normalized = normalize_partial(&trimmed);
@@ -368,21 +534,22 @@ fn transcribe_and_type(
                                 return;
                             }
 
-                            // Only type the suffix if the new text extends the previous typed partial.
                             if !st.last_typed.is_empty() && trimmed.starts_with(&st.last_typed) {
                                 let suffix = &trimmed[st.last_typed.len()..];
                                 if !suffix.is_empty() {
-                                    info!("Partial result: \"{}\"", trimmed);
                                     info!("Typing partial suffix...");
-                                    if let Err(e) = typer.lock().type_text(suffix) {
-                                        error!("Failed to type partial suffix: {}", e);
+                                    if type_to_window {
+                                        if let Err(e) = typer.lock().type_text(suffix) {
+                                            error!("Failed to type partial suffix: {}", e);
+                                        }
                                     }
                                 }
                             } else if st.last_typed.is_empty() {
-                                info!("Partial result: \"{}\"", trimmed);
                                 info!("Typing partial text...");
-                                if let Err(e) = typer.lock().type_text(&trimmed) {
-                                    error!("Failed to type partial text: {}", e);
+                                if type_to_window {
+                                    if let Err(e) = typer.lock().type_text(&trimmed) {
+                                        error!("Failed to type partial text: {}", e);
+                                    }
                                 }
                             } else {
                                 info!("Partial changed, skipping typing this chunk");
@@ -392,21 +559,22 @@ fn transcribe_and_type(
                             let _ = proxy.send_event(UserEvent::TranscriptionComplete(app_status));
                             return;
                         } else {
-                            // Final result: type only the delta if it extends the last partial.
                             if !st.last_typed.is_empty() && trimmed.starts_with(&st.last_typed) {
                                 let suffix = &trimmed[st.last_typed.len()..];
                                 if !suffix.is_empty() {
-                                    info!("Final result (delta): \"{}\"", trimmed);
                                     info!("Typing final suffix...");
-                                    if let Err(e) = typer.lock().type_text(suffix) {
-                                        error!("Failed to type final suffix: {}", e);
+                                    if type_to_window {
+                                        if let Err(e) = typer.lock().type_text(suffix) {
+                                            error!("Failed to type final suffix: {}", e);
+                                        }
                                     }
                                 }
                             } else {
                                 info!("Final result: \"{}\"", trimmed);
-                                info!("Typing into active window...");
-                                if let Err(e) = typer.lock().type_text(&trimmed) {
-                                    error!("Failed to type: {}", e);
+                                if type_to_window {
+                                    if let Err(e) = typer.lock().type_text(&trimmed) {
+                                        error!("Failed to type: {}", e);
+                                    }
                                 }
                             }
                             st.last_typed.clear();
@@ -414,10 +582,12 @@ fn transcribe_and_type(
                             st.candidate_count = 0;
                         }
                     } else {
+                        let _ = proxy.send_event(UserEvent::SubtitleText(trimmed.clone()));
                         info!("Result: \"{}\"", trimmed);
-                        info!("Typing into active window...");
-                        if let Err(e) = typer.lock().type_text(&trimmed) {
-                            error!("Failed to type: {}", e);
+                        if type_to_window {
+                            if let Err(e) = typer.lock().type_text(&trimmed) {
+                                error!("Failed to type: {}", e);
+                            }
                         }
                     }
                 } else {
@@ -442,6 +612,42 @@ struct PartialState {
 
 fn normalize_partial(text: &str) -> String {
     text.trim().to_lowercase()
+}
+
+/// Remove Whisper timestamp tokens like `<|0.00|>` from text
+fn strip_timestamp_tokens(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut pos = 0;
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    while pos < len {
+        if pos + 5 < len && &text[pos..pos + 2] == "<|" {
+            if let Some(end_pipe) = text[pos + 2..].find("|>") {
+                let ts_str = &text[pos + 2..pos + 2 + end_pipe];
+                if ts_str.parse::<f64>().is_ok() {
+                    pos = pos + 2 + end_pipe + 2;
+                    continue;
+                }
+            }
+        }
+        result.push(bytes[pos] as char);
+        pos += 1;
+    }
+    // Clean up multiple spaces
+    let mut clean = String::with_capacity(result.len());
+    let mut last_space = false;
+    for ch in result.trim().chars() {
+        if ch == ' ' {
+            if !last_space {
+                clean.push(ch);
+            }
+            last_space = true;
+        } else {
+            clean.push(ch);
+            last_space = false;
+        }
+    }
+    clean
 }
 
 fn is_placeholder_transcript(text: &str) -> bool {
@@ -511,16 +717,21 @@ fn should_transcribe(audio_data: &[f32]) -> bool {
     }
 
     let duration_s = sample_count as f32 / 16000.0;
-    if duration_s < 0.15 {
-        warn!("Skipping transcription: audio too short ({:.3}s)", duration_s);
-        return false;
-    }
-
     let max_val = audio_data
         .iter()
         .map(|x| x.abs())
         .fold(0.0f32, f32::max);
     let rms = (audio_data.iter().map(|x| x * x).sum::<f32>() / sample_count as f32).sqrt();
+
+    info!(
+        "Audio check: {:.2}s, {} samples, max={:.4}, rms={:.6}",
+        duration_s, sample_count, max_val, rms
+    );
+
+    if duration_s < 0.15 {
+        warn!("Skipping transcription: audio too short ({:.3}s)", duration_s);
+        return false;
+    }
 
     if max_val < 0.01 && rms < 0.004 {
         warn!(
@@ -537,21 +748,53 @@ fn run_app(mut config: Config) -> Result<()> {
     // Set up CUDA environment if GPU is enabled
     setup_cuda_env(&config);
 
-    // Initialize audio capture
-    let audio_capture = match audio::AudioCapture::new_with_device(config.input_device_name.as_deref()) {
-        Ok(cap) => {
-            info!("Audio capture ready");
-            Arc::new(Mutex::new(cap))
+    // Initialize audio capture based on audio source config
+    info!(
+        "Audio source: {:?}, Input language: {}, Target language: {}",
+        config.audio_source, config.input_language, config.target_language
+    );
+    let audio_capture = match config.audio_source {
+        config::AudioSource::SystemAudio => {
+            match audio::AudioCapture::new_loopback() {
+                Ok(cap) => {
+                    info!("System audio (loopback) capture ready");
+                    Arc::new(Mutex::new(cap))
+                }
+                Err(e) => {
+                    error!("Failed to initialize loopback capture: {}", e);
+                    show_error_dialog(
+                        "Audio Error",
+                        &format!("Failed to initialize system audio capture:\n{}\n\nFalling back to microphone.", e),
+                    );
+                    // Fall back to microphone
+                    let cap = audio::AudioCapture::new_with_device(config.input_device_name.as_deref())?;
+                    config.audio_source = config::AudioSource::Microphone;
+                    Arc::new(Mutex::new(cap))
+                }
+            }
         }
-        Err(e) => {
-            error!("Failed to initialize audio capture: {}", e);
-            show_error_dialog(
-                "Audio Error",
-                &format!("Failed to initialize audio capture:\n{}\n\nPlease check your microphone settings.", e),
-            );
-            return Err(e);
+        config::AudioSource::Microphone => {
+            match audio::AudioCapture::new_with_device(config.input_device_name.as_deref()) {
+                Ok(cap) => {
+                    info!("Audio capture ready");
+                    Arc::new(Mutex::new(cap))
+                }
+                Err(e) => {
+                    error!("Failed to initialize audio capture: {}", e);
+                    show_error_dialog(
+                        "Audio Error",
+                        &format!("Failed to initialize audio capture:\n{}\n\nPlease check your microphone settings.", e),
+                    );
+                    return Err(e);
+                }
+            }
         }
     };
+
+    // Track language settings at runtime (can be changed from tray)
+    let input_language = Arc::new(Mutex::new(config.input_language.clone()));
+    let target_language = Arc::new(Mutex::new(config.target_language.clone()));
+    let type_to_window = Arc::new(AtomicBool::new(config.type_to_window));
 
     // Load backend
     let backend_dir = config::get_backends_dir()?.join(&config.backend_id);
@@ -721,7 +964,13 @@ fn run_app(mut config: Config) -> Result<()> {
     let hotkey_receiver = HotkeyManager::receiver();
 
     // Initialize tray
-    let mut tray_manager = match tray::TrayManager::new() {
+    let mut tray_manager = match tray::TrayManager::new(
+        config.audio_source == config::AudioSource::SystemAudio,
+        &config.input_language,
+        &config.target_language,
+        config.subtitle_visible,
+        config.type_to_window,
+    ) {
         Ok(tm) => tm,
         Err(e) => {
             error!("Failed to initialize tray: {}", e);
@@ -735,8 +984,12 @@ fn run_app(mut config: Config) -> Result<()> {
     };
     let menu_receiver = tray::TrayManager::menu_receiver();
     let show_overlay_id = tray_manager.show_overlay_id.clone();
+    let show_subtitle_id = tray_manager.show_subtitle_id.clone();
+    let type_to_window_id = tray_manager.type_to_window_id.clone();
     let settings_id = tray_manager.settings_id.clone();
     let exit_id = tray_manager.exit_id.clone();
+    let mic_source_id = tray_manager.mic_source_id.clone();
+    let system_audio_source_id = tray_manager.system_audio_source_id.clone();
 
     // Initialize overlay with saved position
     let mut overlay = match Overlay::new(&event_loop, config.overlay_x, config.overlay_y) {
@@ -753,6 +1006,58 @@ fn run_app(mut config: Config) -> Result<()> {
     };
     overlay.set_status(AppStatus::Idle);
 
+    // Initialize subtitle bar
+    let mut subtitle_bar = match subtitle::SubtitleBar::new(
+        &event_loop,
+        config.subtitle_x,
+        config.subtitle_y,
+        config.subtitle_width,
+        config.subtitle_height,
+        &config.subtitle_font,
+        config.subtitle_font_size,
+    ) {
+        Ok(sb) => {
+            info!("Subtitle bar created");
+            sb
+        }
+        Err(e) => {
+            error!("Failed to create subtitle bar: {}", e);
+            return Err(e);
+        }
+    };
+    if config.subtitle_visible {
+        subtitle_bar.show();
+    }
+
+    // Build subtitle bar right-click context menu (Font / Size submenus)
+    use tray_icon::menu::{ContextMenu, Menu as TrayMenu, MenuId, MenuItem as TrayMenuItem, Submenu};
+
+    let sub_font_submenu = Submenu::new("Font", true);
+    let mut sub_font_items: Vec<(TrayMenuItem, String)> = Vec::new();
+    let mut sub_font_ids: Vec<(MenuId, String)> = Vec::new();
+    for &font in subtitle::FONTS {
+        let marker = if font == config.subtitle_font { " *" } else { "" };
+        let item = TrayMenuItem::new(format!("{}{}", font, marker), true, None);
+        sub_font_ids.push((item.id().clone(), font.to_string()));
+        sub_font_items.push((item.clone(), font.to_string()));
+        let _ = sub_font_submenu.append(&item);
+    }
+
+    let sub_size_submenu = Submenu::new("Size", true);
+    let mut sub_size_items: Vec<(TrayMenuItem, u32)> = Vec::new();
+    let mut sub_size_ids: Vec<(MenuId, u32)> = Vec::new();
+    for &sz in subtitle::FONT_SIZES {
+        let marker = if sz == config.subtitle_font_size { " *" } else { "" };
+        let item = TrayMenuItem::new(format!("{}{}", sz, marker), true, None);
+        sub_size_ids.push((item.id().clone(), sz));
+        sub_size_items.push((item.clone(), sz));
+        let _ = sub_size_submenu.append(&item);
+    }
+
+    let sub_ctx_menu = TrayMenu::new();
+    let _ = sub_ctx_menu.append(&sub_font_submenu);
+    let _ = sub_ctx_menu.append(&sub_size_submenu);
+
     info!("Overlay window created");
     info!("System tray icon created");
     info!("========================================");
@@ -763,6 +1068,7 @@ fn run_app(mut config: Config) -> Result<()> {
     // App state
     let state = Arc::new(Mutex::new(AppMode::Idle));
     let always_listen_partial = Arc::new(Mutex::new(PartialState::default()));
+    let always_listen_agreement = Arc::new(Mutex::new(local_agreement::LocalAgreement::new()));
     let running = Arc::new(AtomicBool::new(true));
 
     // Always-listen state
@@ -770,6 +1076,9 @@ fn run_app(mut config: Config) -> Result<()> {
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<f32>>(100);
     let (result_tx, _result_rx) =
         crossbeam_channel::bounded::<always_listen::AlwaysListenResult>(10);
+
+    // Channel for sending trim commands from transcription threads to always-listen controller
+    let (trim_cmd_tx, trim_cmd_rx) = crossbeam_channel::bounded::<always_listen::AlwaysListenCommand>(10);
 
     // Spawn always-listen processing thread
     let always_listen_running = Arc::clone(&running);
@@ -806,6 +1115,13 @@ fn run_app(mut config: Config) -> Result<()> {
                     last_was_recording = is_recording;
                 }
 
+                // Process trim commands from transcription threads
+                while let Ok(cmd) = trim_cmd_rx.try_recv() {
+                    if let always_listen::AlwaysListenCommand::TrimBuffer(ts) = cmd {
+                        let _ = controller.trim_buffer(ts);
+                    }
+                }
+
                 // Check for transcription results
                 if let Some(result) = controller.try_recv_result() {
                     debug!(
@@ -830,24 +1146,11 @@ fn run_app(mut config: Config) -> Result<()> {
         let _ = controller.stop();
     });
 
-    // Create always-listen audio stream (will be started/stopped based on always_listen_active)
+    // Always-listen audio stream — created lazily on toggle to avoid holding
+    // a WASAPI session on the output device when not in use (which can block
+    // DirectShow-based video players like MPC).
     let always_listen_stream_running = Arc::new(AtomicBool::new(false));
-    let al_stream_running = Arc::clone(&always_listen_stream_running);
-    let al_stream_audio_tx = audio_tx.clone();
-    
-    let always_listen_stream = match audio_capture.lock().create_always_listen_stream(
-        al_stream_audio_tx,
-        al_stream_running,
-    ) {
-        Ok(stream) => {
-            info!("Always-listen audio stream created");
-            Some(stream)
-        }
-        Err(e) => {
-            error!("Failed to create always-listen audio stream: {}", e);
-            None
-        }
-    };
+    let always_listen_stream: Option<Stream> = None;
 
     // Spawn hotkey listener thread
     let proxy_hotkey = proxy.clone();
@@ -869,24 +1172,48 @@ fn run_app(mut config: Config) -> Result<()> {
     // Spawn menu listener thread
     let proxy_menu = proxy.clone();
     let running_menu = Arc::clone(&running);
+    let sub_font_ids_thread = sub_font_ids.clone();
+    let sub_size_ids_thread = sub_size_ids.clone();
     std::thread::spawn(move || {
         while running_menu.load(Ordering::SeqCst) {
             if let Ok(event) = menu_receiver.recv_timeout(Duration::from_millis(100)) {
-                let _ = proxy_menu.send_event(UserEvent::Menu(event.id));
+                // Check subtitle font/size menus first
+                let mut handled = false;
+                for (fid, name) in &sub_font_ids_thread {
+                    if event.id == *fid {
+                        let _ = proxy_menu.send_event(UserEvent::SetSubtitleFont(String::clone(name)));
+                        handled = true;
+                        break;
+                    }
+                }
+                if !handled {
+                    for (sid, sz) in &sub_size_ids_thread {
+                        if event.id == *sid {
+                            let _ = proxy_menu.send_event(UserEvent::SetSubtitleFontSize(*sz));
+                            handled = true;
+                            break;
+                        }
+                    }
+                }
+                if !handled {
+                    let _ = proxy_menu.send_event(UserEvent::Menu(event.id));
+                }
             }
         }
     });
 
-    // Clone for event loop
-    let always_listen_stream_for_loop = always_listen_stream;
+    // Move into event loop
+    let mut always_listen_stream = always_listen_stream;
     let always_listen_stream_running_for_loop = always_listen_stream_running;
 
     // Run event loop
     event_loop.run(move |event, _, control_flow| {
-        // Rename for convenience in the loop
-        let always_listen_stream = &always_listen_stream_for_loop;
         let always_listen_stream_running = &always_listen_stream_running_for_loop;
-        *control_flow = ControlFlow::Wait;
+        // Use WaitUntil so we can periodically check subtitle fade
+        *control_flow = ControlFlow::WaitUntil(std::time::Instant::now() + Duration::from_secs(1));
+
+        // Periodically check subtitle fade
+        subtitle_bar.check_fade();
 
         match event {
             Event::UserEvent(user_event) => match user_event {
@@ -933,6 +1260,10 @@ fn run_app(mut config: Config) -> Result<()> {
                                 drop(mode);
 
                                 // Transcribe in background
+                                let tgt = target_language.lock().clone();
+                                let inp = input_language.lock().clone();
+                                let is_translating = should_translate(&inp, &tgt);
+                                let lang = if inp == "auto" { None } else { Some(inp) };
                                 transcribe_and_type(
                                     audio_data,
                                     Arc::clone(&model),
@@ -942,6 +1273,11 @@ fn run_app(mut config: Config) -> Result<()> {
                                     AppStatus::Idle,
                                     None,
                                     false,
+                                    is_translating,
+                                    type_to_window.load(Ordering::SeqCst),
+                                    None,
+                                    None,
+                                    lang,
                                 );
                             }
                         }
@@ -950,29 +1286,38 @@ fn run_app(mut config: Config) -> Result<()> {
                             match *mode {
                                 AppMode::Idle => {
                                     info!("Starting always-listen mode...");
-                                    always_listen_active.store(true, Ordering::SeqCst);
+                                    // Create the audio stream on demand
+                                    let al_running = Arc::clone(always_listen_stream_running);
                                     always_listen_stream_running.store(true, Ordering::SeqCst);
-                                    // Start the audio stream if available
-                                    if let Some(ref stream) = always_listen_stream {
-                                        if let Err(e) = stream.play() {
-                                            error!("Failed to start always-listen audio stream: {}", e);
-                                            always_listen_active.store(false, Ordering::SeqCst);
+                                    match audio_capture.lock().create_always_listen_stream(
+                                        audio_tx.clone(),
+                                        al_running,
+                                    ) {
+                                        Ok(stream) => {
+                                            if let Err(e) = stream.play() {
+                                                error!("Failed to start always-listen audio stream: {}", e);
+                                                always_listen_active.store(false, Ordering::SeqCst);
+                                                always_listen_stream_running.store(false, Ordering::SeqCst);
+                                                return;
+                                            }
+                                            always_listen_stream = Some(stream);
+                                            always_listen_active.store(true, Ordering::SeqCst);
+                                            *mode = AppMode::AlwaysListening;
+                                            tray_manager.set_status(AppStatus::AlwaysListening);
+                                            overlay.set_status(AppStatus::AlwaysListening);
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to create always-listen audio stream: {}", e);
                                             always_listen_stream_running.store(false, Ordering::SeqCst);
-                                            return;
                                         }
                                     }
-                                    *mode = AppMode::AlwaysListening;
-                                    tray_manager.set_status(AppStatus::AlwaysListening);
-                                    overlay.set_status(AppStatus::AlwaysListening);
                                 }
                                 AppMode::AlwaysListening => {
                                     info!("Stopping always-listen mode...");
                                     always_listen_active.store(false, Ordering::SeqCst);
                                     always_listen_stream_running.store(false, Ordering::SeqCst);
-                                    // Pause the audio stream
-                                    if let Some(ref stream) = always_listen_stream {
-                                        let _ = stream.pause();
-                                    }
+                                    // Drop the stream to release the WASAPI session
+                                    always_listen_stream = None;
                                     *mode = AppMode::Idle;
                                     tray_manager.set_status(AppStatus::Idle);
                                     overlay.set_status(AppStatus::Idle);
@@ -986,11 +1331,20 @@ fn run_app(mut config: Config) -> Result<()> {
                 }
                 UserEvent::AlwaysListenAudio(result) => {
                     // Handle always-listen audio for transcription
+                    info!(
+                        "Always-listen audio received: {} samples ({:.1}s), partial={}",
+                        result.audio.len(),
+                        result.audio.len() as f32 / 16000.0,
+                        result.is_partial
+                    );
                     *state.lock() = AppMode::Processing;
                     tray_manager.set_status(AppStatus::Processing);
                     overlay.set_status(AppStatus::Processing);
 
-                    // Transcribe the audio
+                    let tgt = target_language.lock().clone();
+                    let inp = input_language.lock().clone();
+                    let is_translating = should_translate(&inp, &tgt);
+                    let lang = if inp == "auto" { None } else { Some(inp) };
                     transcribe_and_type(
                         result.audio,
                         Arc::clone(&model),
@@ -1000,6 +1354,11 @@ fn run_app(mut config: Config) -> Result<()> {
                         AppStatus::AlwaysListening,
                         Some(Arc::clone(&always_listen_partial)),
                         result.is_partial,
+                        is_translating,
+                        type_to_window.load(Ordering::SeqCst),
+                        if is_translating { Some(Arc::clone(&always_listen_agreement)) } else { None },
+                        if is_translating { Some(trim_cmd_tx.clone()) } else { None },
+                        lang,
                     );
                 }
                 UserEvent::AlwaysListenStateChange(is_recording) => {
@@ -1015,20 +1374,70 @@ fn run_app(mut config: Config) -> Result<()> {
                         }
                     }
                 }
+                UserEvent::SubtitleText(text) => {
+                    subtitle_bar.append_text(&text);
+                }
+                UserEvent::SubtitleReplace(text) => {
+                    subtitle_bar.set_text(&text);
+                }
+                UserEvent::SetSubtitleFont(ref name) => {
+                    subtitle_bar.set_font(name);
+                    if let Ok(mut cfg) = config::Config::load() {
+                        cfg.subtitle_font = name.clone();
+                        let _ = cfg.save();
+                    }
+                    for (item, font) in &sub_font_items {
+                        let marker = if font == name { " *" } else { "" };
+                        item.set_text(format!("{}{}", font, marker));
+                    }
+                    info!("Subtitle font: {}", name);
+                }
+                UserEvent::SetSubtitleFontSize(sz) => {
+                    subtitle_bar.set_font_size(sz);
+                    if let Ok(mut cfg) = config::Config::load() {
+                        cfg.subtitle_font_size = sz;
+                        let _ = cfg.save();
+                    }
+                    for (item, size) in &sub_size_items {
+                        let marker = if *size == sz { " *" } else { "" };
+                        item.set_text(format!("{}{}", size, marker));
+                    }
+                    info!("Subtitle font size: {}", sz);
+                }
                 UserEvent::Menu(menu_id) => {
                     if menu_id == show_overlay_id {
                         overlay.toggle_visibility();
+                    } else if menu_id == show_subtitle_id {
+                        subtitle_bar.toggle_visibility();
+                        tray_manager.set_subtitle_visible(subtitle_bar.is_visible());
+                        // Save to config
+                        if let Ok(mut cfg) = config::Config::load() {
+                            cfg.subtitle_visible = subtitle_bar.is_visible();
+                            let _ = cfg.save();
+                        }
+                    } else if menu_id == type_to_window_id {
+                        let current = type_to_window.load(Ordering::SeqCst);
+                        let new_val = !current;
+                        type_to_window.store(new_val, Ordering::SeqCst);
+                        tray_manager.set_type_to_window(new_val);
+                        info!("Type to window: {}", if new_val { "ON" } else { "OFF" });
+                        if let Ok(mut cfg) = config::Config::load() {
+                            cfg.type_to_window = new_val;
+                            let _ = cfg.save();
+                        }
                     } else if menu_id == settings_id {
                         // Save state, launch setup wizard, and exit
                         info!("Opening settings (restarting into setup mode)...");
                         // Stop always-listen
                         always_listen_active.store(false, Ordering::SeqCst);
                         always_listen_stream_running.store(false, Ordering::SeqCst);
-                        if let Some(ref stream) = always_listen_stream {
-                            let _ = stream.pause();
-                        }
-                        let (x, y) = overlay.get_position();
-                        if let Err(e) = save_overlay_position(x, y) {
+                        always_listen_stream = None;
+                        if let Err(e) = save_window_positions(
+                            overlay.get_position(),
+                            subtitle_bar.get_position(),
+                            subtitle_bar.get_size(),
+                            subtitle_bar.is_visible(),
+                        ) {
                             error!("Failed to save config: {}", e);
                         }
                         // Spawn setup wizard and exit current process
@@ -1039,17 +1448,67 @@ fn run_app(mut config: Config) -> Result<()> {
                         }
                         running.store(false, Ordering::SeqCst);
                         *control_flow = ControlFlow::Exit;
+                    } else if menu_id == mic_source_id {
+                        info!("Switching to microphone input");
+                        tray_manager.set_audio_source_microphone();
+                        // Recreate audio capture with microphone
+                        match audio::AudioCapture::new_with_device(None) {
+                            Ok(cap) => {
+                                *audio_capture.lock() = cap;
+                                // Save to config
+                                if let Ok(mut cfg) = config::Config::load() {
+                                    cfg.audio_source = config::AudioSource::Microphone;
+                                    let _ = cfg.save();
+                                }
+                            }
+                            Err(e) => error!("Failed to switch to microphone: {}", e),
+                        }
+                    } else if menu_id == system_audio_source_id {
+                        info!("Switching to system audio (loopback)");
+                        tray_manager.set_audio_source_system_audio();
+                        // Recreate audio capture with loopback
+                        match audio::AudioCapture::new_loopback() {
+                            Ok(cap) => {
+                                *audio_capture.lock() = cap;
+                                // Save to config
+                                if let Ok(mut cfg) = config::Config::load() {
+                                    cfg.audio_source = config::AudioSource::SystemAudio;
+                                    let _ = cfg.save();
+                                }
+                            }
+                            Err(e) => error!("Failed to switch to system audio: {}", e),
+                        }
+                    } else if let Some(lang) = tray_manager.input_language_for_menu_id(&menu_id) {
+                        tray_manager.set_input_language(&lang);
+                        *input_language.lock() = lang.clone();
+                        info!("Input language: {}", lang);
+                        if let Ok(mut cfg) = config::Config::load() {
+                            cfg.input_language = lang;
+                            let _ = cfg.save();
+                        }
+                    } else if let Some(lang) = tray_manager.target_language_for_menu_id(&menu_id) {
+                        tray_manager.set_target_language(&lang);
+                        *target_language.lock() = lang.clone();
+                        let is_translating = lang != "original";
+                        info!("Target language: {} (translate={})", lang, is_translating);
+                        if let Ok(mut cfg) = config::Config::load() {
+                            cfg.target_language = lang;
+                            cfg.translate_mode = is_translating;
+                            let _ = cfg.save();
+                        }
                     } else if menu_id == exit_id {
                         info!("Exiting...");
                         // Stop always-listen
                         always_listen_active.store(false, Ordering::SeqCst);
                         always_listen_stream_running.store(false, Ordering::SeqCst);
-                        if let Some(ref stream) = always_listen_stream {
-                            let _ = stream.pause();
-                        }
-                        // Save overlay position before exit
-                        let (x, y) = overlay.get_position();
-                        if let Err(e) = save_overlay_position(x, y) {
+                        always_listen_stream = None;
+                        // Save window positions before exit
+                        if let Err(e) = save_window_positions(
+                            overlay.get_position(),
+                            subtitle_bar.get_position(),
+                            subtitle_bar.get_size(),
+                            subtitle_bar.is_visible(),
+                        ) {
                             error!("Failed to save config: {}", e);
                         }
                         running.store(false, Ordering::SeqCst);
@@ -1080,6 +1539,9 @@ fn run_app(mut config: Config) -> Result<()> {
             } => {
                 if window_id == overlay.window_id() {
                     overlay.set_visible(false);
+                } else if window_id == subtitle_bar.window_id() {
+                    subtitle_bar.hide();
+                    tray_manager.set_subtitle_visible(false);
                 }
             }
             Event::WindowEvent {
@@ -1094,6 +1556,8 @@ fn run_app(mut config: Config) -> Result<()> {
             } => {
                 if window_id == overlay.window_id() {
                     overlay.start_drag();
+                } else if window_id == subtitle_bar.window_id() {
+                    subtitle_bar.start_drag();
                 }
             }
             Event::WindowEvent {
@@ -1121,11 +1585,13 @@ fn run_app(mut config: Config) -> Result<()> {
                                     // Stop always-listen
                                     always_listen_active.store(false, Ordering::SeqCst);
                                     always_listen_stream_running.store(false, Ordering::SeqCst);
-                                    if let Some(ref stream) = always_listen_stream {
-                                        let _ = stream.pause();
-                                    }
-                                    let (x, y) = overlay.get_position();
-                                    if let Err(e) = save_overlay_position(x, y) {
+                                    always_listen_stream = None;
+                                    if let Err(e) = save_window_positions(
+                                        overlay.get_position(),
+                                        subtitle_bar.get_position(),
+                                        subtitle_bar.get_size(),
+                                        subtitle_bar.is_visible(),
+                                    ) {
                                         error!("Failed to save config: {}", e);
                                     }
                                     // Spawn setup wizard and exit current process
@@ -1142,12 +1608,13 @@ fn run_app(mut config: Config) -> Result<()> {
                                     // Stop always-listen
                                     always_listen_active.store(false, Ordering::SeqCst);
                                     always_listen_stream_running.store(false, Ordering::SeqCst);
-                                    if let Some(ref stream) = always_listen_stream {
-                                        let _ = stream.pause();
-                                    }
-                                    // Save overlay position before exit
-                                    let (x, y) = overlay.get_position();
-                                    if let Err(e) = save_overlay_position(x, y) {
+                                    always_listen_stream = None;
+                                    if let Err(e) = save_window_positions(
+                                        overlay.get_position(),
+                                        subtitle_bar.get_position(),
+                                        subtitle_bar.get_size(),
+                                        subtitle_bar.is_visible(),
+                                    ) {
                                         error!("Failed to save config: {}", e);
                                     }
                                     running.store(false, Ordering::SeqCst);
@@ -1157,11 +1624,24 @@ fn run_app(mut config: Config) -> Result<()> {
                             }
                         }
                     }
+                } else if window_id == subtitle_bar.window_id() {
+                    sub_ctx_menu.show_context_menu_for_hwnd(subtitle_bar.hwnd(), None);
                 }
             }
             Event::RedrawRequested(window_id) => {
                 if window_id == overlay.window_id() {
                     overlay.handle_redraw();
+                } else if window_id == subtitle_bar.window_id() {
+                    subtitle_bar.handle_redraw();
+                }
+            }
+            Event::WindowEvent {
+                event: WindowEvent::Resized(_),
+                window_id,
+                ..
+            } => {
+                if window_id == subtitle_bar.window_id() {
+                    subtitle_bar.handle_redraw();
                 }
             }
             _ => {}
@@ -1178,15 +1658,30 @@ fn sanitize_overlay_position(x: i32, y: i32) -> Option<(i32, i32)> {
     }
 }
 
-fn save_overlay_position(x: i32, y: i32) -> Result<()> {
+fn save_window_positions(
+    overlay_pos: (i32, i32),
+    subtitle_pos: (i32, i32),
+    subtitle_size: (u32, u32),
+    subtitle_visible: bool,
+) -> Result<()> {
     let mut cfg = Config::load()?;
-    if let Some((x, y)) = sanitize_overlay_position(x, y) {
+    if let Some((x, y)) = sanitize_overlay_position(overlay_pos.0, overlay_pos.1) {
         cfg.overlay_x = Some(x);
         cfg.overlay_y = Some(y);
     } else {
         cfg.overlay_x = None;
         cfg.overlay_y = None;
     }
+    if let Some((x, y)) = sanitize_overlay_position(subtitle_pos.0, subtitle_pos.1) {
+        cfg.subtitle_x = Some(x);
+        cfg.subtitle_y = Some(y);
+    } else {
+        cfg.subtitle_x = None;
+        cfg.subtitle_y = None;
+    }
+    cfg.subtitle_width = Some(subtitle_size.0);
+    cfg.subtitle_height = Some(subtitle_size.1);
+    cfg.subtitle_visible = subtitle_visible;
     cfg.save()
 }
 
@@ -1197,4 +1692,8 @@ enum UserEvent {
     TranscriptionComplete(AppStatus),
     AlwaysListenAudio(always_listen::AlwaysListenResult),
     AlwaysListenStateChange(bool), // true = recording, false = listening
+    SubtitleText(String),
+    SubtitleReplace(String),
+    SetSubtitleFont(String),
+    SetSubtitleFontSize(u32),
 }

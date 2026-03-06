@@ -104,7 +104,9 @@ fn get_preprocessor_repo(model: &ManifestModel) -> Option<String> {
     let folder = model.folder_name.to_lowercase();
     let is_english = folder.ends_with(".en") || model.id.ends_with("-en");
 
-    let base = if folder.contains("large-v3") {
+    let base = if folder.contains("large-v3-turbo") {
+        "openai/whisper-large-v3-turbo"
+    } else if folder.contains("large-v3") {
         "openai/whisper-large-v3"
     } else if folder.contains("large-v2") {
         "openai/whisper-large-v2"

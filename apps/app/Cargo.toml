@@ -19,6 +19,7 @@ tao = "0.30"
 tray-icon = "0.17"
 softbuffer = "0.4"
 image = "0.25"
+eframe = "0.30"
 
 # Hotkeys
 global-hotkey = "0.6"
@@ -47,6 +48,15 @@ tracing-appender = "0.2"
 # Networking for model downloads
 reqwest = { version = "0.12", features = ["blocking"] }
 open = "5"
+
+# Audio file decoding for --transcribe mode
+symphonia = { version = "0.5", features = ["mp3", "wav", "flac", "ogg", "aac"] }
+
+# Progress bar for file transcription
+indicatif = "0.17"
+
+# Timestamp token parsing
+regex = "1"
 
 
 # File/folder dialog

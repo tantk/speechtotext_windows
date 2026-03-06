@@ -39,6 +39,8 @@ pub struct TranscribeOptions {
     pub language: *const c_char,
     /// Whether to include timestamps
     pub timestamps: bool,
+    /// Whether to translate to English instead of transcribing
+    pub translate: bool,
 }
 
 impl Default for TranscribeOptions {
@@ -46,6 +48,7 @@ impl Default for TranscribeOptions {
         Self {
             language: std::ptr::null(),
             timestamps: false,
+            translate: false,
         }
     }
 }

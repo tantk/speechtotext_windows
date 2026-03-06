@@ -4,6 +4,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioSource {
+    Microphone,
+    SystemAudio,
+}
+
+impl Default for AudioSource {
+    fn default() -> Self {
+        AudioSource::Microphone
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Backend ID (e.g., "whisper-ct2" or "whisper-cpp")
@@ -34,6 +47,40 @@ pub struct Config {
     /// Pseudo-streaming interval for always-listen (milliseconds)
     #[serde(default = "default_streaming_interval_ms")]
     pub streaming_interval_ms: u64,
+    /// Audio input source (microphone or system audio loopback)
+    #[serde(default)]
+    pub audio_source: AudioSource,
+    /// Translate to English instead of transcribing (DEPRECATED: use target_language)
+    #[serde(default)]
+    pub translate_mode: bool,
+    /// Input language code ("auto" for auto-detect, or Whisper language code like "en", "zh")
+    #[serde(default = "default_input_language")]
+    pub input_language: String,
+    /// Target language code ("original" for no translation, or language code like "en")
+    #[serde(default = "default_target_language")]
+    pub target_language: String,
+    /// Type transcription into the active window
+    #[serde(default = "default_true")]
+    pub type_to_window: bool,
+    /// Subtitle bar visibility
+    #[serde(default = "default_true")]
+    pub subtitle_visible: bool,
+    /// Saved subtitle bar position
+    #[serde(default)]
+    pub subtitle_x: Option<i32>,
+    #[serde(default)]
+    pub subtitle_y: Option<i32>,
+    /// Saved subtitle bar dimensions
+    #[serde(default)]
+    pub subtitle_width: Option<u32>,
+    #[serde(default)]
+    pub subtitle_height: Option<u32>,
+    /// Subtitle font name ("Auto" for script-based auto-detection)
+    #[serde(default = "default_subtitle_font")]
+    pub subtitle_font: String,
+    /// Subtitle font size
+    #[serde(default = "default_subtitle_font_size")]
+    pub subtitle_font_size: u32,
 }
 
 fn default_silence_timeout_ms() -> u64 {
@@ -45,6 +92,26 @@ fn default_streaming_interval_ms() -> u64 {
 }
 fn default_backend_id() -> String {
     "whisper-ct2".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_input_language() -> String {
+    "auto".to_string()
+}
+
+fn default_target_language() -> String {
+    "original".to_string()
+}
+
+fn default_subtitle_font() -> String {
+    "Auto".to_string()
+}
+
+fn default_subtitle_font_size() -> u32 {
+    24
 }
 
 impl Default for Config {
@@ -64,6 +131,18 @@ impl Default for Config {
             input_device_name: None,
             silence_timeout_ms: default_silence_timeout_ms(),
             streaming_interval_ms: default_streaming_interval_ms(),
+            audio_source: AudioSource::default(),
+            translate_mode: false,
+            input_language: default_input_language(),
+            target_language: default_target_language(),
+            type_to_window: true,
+            subtitle_visible: true,
+            subtitle_x: None,
+            subtitle_y: None,
+            subtitle_width: None,
+            subtitle_height: None,
+            subtitle_font: default_subtitle_font(),
+            subtitle_font_size: default_subtitle_font_size(),
         }
     }
 }
@@ -474,6 +553,11 @@ pub fn setup_cuda_env(config: &Config) {
 }
 
 impl Config {
+    /// Whether translation is active (target_language != "original")
+    pub fn is_translating(&self) -> bool {
+        self.target_language != "original"
+    }
+
     /// Check if the configured model file exists
     pub fn model_exists(&self) -> bool {
         self.model_path.exists()
@@ -485,13 +569,23 @@ impl Config {
 
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)?;
-            let config: Config = serde_json::from_str(&content)?;
+            let mut config: Config = serde_json::from_str(&content)?;
+            // Migration: old configs have translate_mode but no target_language
+            if config.translate_mode && config.target_language == "original" {
+                config.target_language = "en".to_string();
+            }
+            // Sync translate_mode from target_language
+            config.translate_mode = config.target_language != "original";
             Ok(config)
         } else {
             let legacy_path = get_legacy_config_path()?;
             if legacy_path.exists() {
                 let content = fs::read_to_string(&legacy_path)?;
-                let config: Config = serde_json::from_str(&content)?;
+                let mut config: Config = serde_json::from_str(&content)?;
+                if config.translate_mode && config.target_language == "original" {
+                    config.target_language = "en".to_string();
+                }
+                config.translate_mode = config.target_language != "original";
                 let content = serde_json::to_string_pretty(&config)?;
                 let _ = fs::write(config_path, content);
                 Ok(config)
@@ -538,6 +632,18 @@ impl Config {
             input_device_name,
             silence_timeout_ms,
             streaming_interval_ms,
+            audio_source: AudioSource::default(),
+            translate_mode: false,
+            input_language: default_input_language(),
+            target_language: default_target_language(),
+            type_to_window: true,
+            subtitle_visible: true,
+            subtitle_x: None,
+            subtitle_y: None,
+            subtitle_width: None,
+            subtitle_height: None,
+            subtitle_font: default_subtitle_font(),
+            subtitle_font_size: default_subtitle_font_size(),
         }
     }
 }

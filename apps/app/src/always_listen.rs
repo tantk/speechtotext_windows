@@ -87,7 +87,7 @@ impl Default for AlwaysListenConfig {
 }
 
 /// Commands to control the always-listen controller
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AlwaysListenCommand {
     Start,
     Stop,
@@ -95,6 +95,8 @@ pub enum AlwaysListenCommand {
     Pause,
     #[allow(dead_code)]
     Resume,
+    /// Trim the recording buffer up to this timestamp (seconds from recording start)
+    TrimBuffer(f64),
 }
 
 /// Result of always-listen transcription chunk
@@ -196,6 +198,17 @@ impl AudioBufferManager {
     /// Snapshot current recording buffer
     pub fn recording_snapshot(&self) -> Vec<f32> {
         self.recording.clone()
+    }
+
+    /// Trim the recording buffer up to `timestamp` seconds from the start.
+    /// Returns the number of samples removed.
+    pub fn trim_before(&mut self, timestamp: f64) -> usize {
+        let sample_idx = (timestamp * self.sample_rate as f64) as usize;
+        let trim = sample_idx.min(self.recording.len());
+        if trim > 0 {
+            self.recording.drain(..trim);
+        }
+        trim
     }
 }
 
@@ -383,6 +396,19 @@ impl AlwaysListenController {
         Ok(())
     }
 
+    /// Trim audio buffer up to timestamp (seconds from recording start)
+    pub fn trim_buffer(&self, timestamp: f64) -> Result<()> {
+        self.command_tx
+            .send(AlwaysListenCommand::TrimBuffer(timestamp))
+            .context("Failed to send trim command")?;
+        Ok(())
+    }
+
+    /// Get a clone of the command sender for use from other threads
+    pub fn command_sender(&self) -> Sender<AlwaysListenCommand> {
+        self.command_tx.clone()
+    }
+
     /// Get current state
     pub fn state(&self) -> AlwaysListenState {
         *self.state.lock()
@@ -455,6 +481,14 @@ fn processing_loop(
                 }
                 AlwaysListenCommand::Pause => {
                     *state.lock() = AlwaysListenState::Paused;
+                }
+                AlwaysListenCommand::TrimBuffer(timestamp) => {
+                    let trimmed = buffer_manager.trim_before(timestamp);
+                    if trimmed > 0 {
+                        // Adjust streaming state since buffer shrank
+                        last_stream_len = last_stream_len.saturating_sub(trimmed);
+                        info!("Buffer trimmed: removed {} samples ({:.2}s)", trimmed, timestamp);
+                    }
                 }
                 AlwaysListenCommand::Resume | AlwaysListenCommand::Start => {
                     let mut s = state.lock();
