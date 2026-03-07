@@ -181,6 +181,7 @@ impl SubtitleBar {
 
     pub fn set_text(&mut self, text: &str) {
         self.text = text.to_string();
+        self.trim_to_fit();
         self.last_text_time = Some(Instant::now());
         if self.visible {
             self.render();
@@ -467,24 +468,60 @@ fn render_text_gdi(
         );
         let old_font = SelectObject(hdc_mem, hfont);
 
-        let mut rect = RECT {
-            left: 4,
-            top: 2,
-            right: width as i32 - 4,
-            bottom: height as i32,
-        };
-
         let mut wide: Vec<u16> = text.encode_utf16().collect();
 
-        let line_height = font_size as i32 + 4;
-        let available_height = rect.bottom - rect.top;
-        let flags = if available_height > line_height * 2 {
-            DT_CENTER | DT_WORDBREAK | DT_NOPREFIX
-        } else {
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX
+        // Measure text height first to decide layout
+        let mut measure_rect = RECT {
+            left: 4,
+            top: 0,
+            right: width as i32 - 4,
+            bottom: 0,
         };
+        let mut measure_wide = wide.clone();
+        DrawTextW(
+            hdc_mem,
+            &mut measure_wide,
+            &mut measure_rect,
+            DT_CENTER | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT,
+        );
+        let text_height = measure_rect.bottom - measure_rect.top;
+        let bar_height = height as i32;
 
-        DrawTextW(hdc_mem, &mut wide, &mut rect, flags);
+        let line_height = font_size as i32 + 4;
+        if bar_height <= line_height * 2 && text_height <= bar_height {
+            // Single line: vertically centered
+            let mut rect = RECT {
+                left: 4,
+                top: 2,
+                right: width as i32 - 4,
+                bottom: bar_height,
+            };
+            DrawTextW(
+                hdc_mem,
+                &mut wide,
+                &mut rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+        } else {
+            // Multi-line: align to bottom so latest text is always visible
+            let top = if text_height > bar_height {
+                bar_height - text_height // negative offset scrolls to bottom
+            } else {
+                2
+            };
+            let mut rect = RECT {
+                left: 4,
+                top,
+                right: width as i32 - 4,
+                bottom: bar_height,
+            };
+            DrawTextW(
+                hdc_mem,
+                &mut wide,
+                &mut rect,
+                DT_CENTER | DT_WORDBREAK | DT_NOPREFIX,
+            );
+        }
 
         let mut bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {

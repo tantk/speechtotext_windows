@@ -1,76 +1,120 @@
 # Speech-to-Text Windows
 
-A Windows-native speech-to-text application with real-time transcription, pluggable Whisper backends, and a system tray interface. Supports push-to-talk, continuous listening with voice activity detection, multilingual transcription, and audio file transcription to SRT subtitles.
+Real-time speech-to-text and translation for Windows. Transcribe or translate speech from any language into text as you talk — powered by OpenAI's Whisper running locally on your machine. No cloud, no API keys, no internet required.
+
+![Real-time Translation Demo](output2.gif)
 
 ![Setup Wizard](speechtotext_windows.png)
 
-## Features
+## Key Features
 
-### Speech Recognition
-- **Push-to-talk** - Hold a hotkey (default: `` ` ``) to record, release to transcribe
-- **Always-listen mode** - Toggle continuous listening (default: `` Ctrl+` ``) with automatic voice activity detection
-- **Multilingual support** - 99 Whisper-supported languages with auto-detection
-- **Translation** - Translate any language to English using Whisper's built-in translation
-- **Audio file transcription** - Transcribe audio files (MP3, WAV, FLAC, OGG, AAC) to SRT subtitles via `--transcribe`
+- **Real-time translation** - Speak in any of 99 languages, get English text instantly
+- **Real-time transcription** - Live speech-to-text in your language with auto-detection
+- **Always-listen mode** - Continuous voice activity detection — just talk and it types
+- **Push-to-talk** - Hold a hotkey to record, release to transcribe
+- **System audio capture** - Translate audio from meetings, videos, or any app playing on your PC
+- **Subtitle bar** - Live subtitle overlay for real-time reading, with CJK font support
+- **Type to active window** - Transcribed text is typed directly into any focused application
+- **GPU accelerated** - CUDA support for fast inference on NVIDIA GPUs
+- **Fully offline** - Everything runs locally after the one-time model download
+
+## How It Works
+
+1. Run `app.exe` — the setup wizard guides you through model selection
+2. Pick a Whisper model (Tiny 75 MB for speed, Large v3 3000 MB for accuracy)
+3. Set your input language and target language (Original or English translation)
+4. Press your hotkey and start talking
+
+The app sits in your system tray. Use push-to-talk for quick dictation, or toggle always-listen mode for hands-free continuous transcription. Switch between microphone and system audio to translate meetings, YouTube videos, or any audio playing on your PC.
+
+## Download
+
+Grab the latest release from [Releases](https://github.com/tantk/speechtotext_windows/releases) — extract the zip and run `app.exe`.
+
+**Requires:** Windows 10/11. For GPU acceleration, install [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) and [cuDNN](https://developer.nvidia.com/cudnn).
+
+## Real-Time Translation Guide
+
+### Translate your microphone (e.g. speak Japanese, get English)
+
+1. Open the **Audio** tab in the setup wizard
+2. Set **Input Language** to your spoken language (e.g. Japanese) or leave on **Auto (detect)**
+3. Set **Target Language** to **English (Translation)**
+4. Click **Start**
+5. Use push-to-talk or always-listen mode — your speech is translated to English in real time
+
+### Translate system audio (e.g. a foreign-language video or meeting)
+
+1. Open the **Audio** tab in the setup wizard
+2. Set **Audio Source** to **System Audio (Loopback)**
+3. Set **Input Language** to the language being spoken, or **Auto (detect)**
+4. Set **Target Language** to **English (Translation)**
+5. Click **Start**
+6. Toggle always-listen mode (`` Ctrl+` ``) — audio from any app on your PC is translated live
+
+### Transcribe without translation (keep original language)
+
+1. Set **Target Language** to **Original Language**
+2. Set **Input Language** to your language or **Auto (detect)**
+3. Speech is transcribed as-is in the original language
+
+### Change language on the fly
+
+You can switch input and target language at any time from the **system tray** right-click menu without reopening the setup wizard.
+
+### Tips
+
+- Use a **multilingual model** (not English-only) for translation and non-English transcription
+- Larger models (Large v3) are more accurate but slower; Tiny/Base are fast but less accurate
+- Enable **GPU acceleration** in the GPU tab for significantly faster processing
+- The **subtitle bar** is useful for reading translations in real time — enable it from the tray menu
+
+## All Features
+
+### Translation & Transcription
+- 99 Whisper-supported input languages with auto-detection
+- Real-time translation from any language to English
+- Push-to-talk and always-listen modes
+- Audio file transcription to SRT subtitles via `--transcribe` CLI flag
+
+### Audio Sources
+- Microphone input with device selection
+- System audio loopback — capture desktop audio from any app
+- Automatic 16kHz mono resampling
 
 ### Output
-- **Type to active window** - Transcribed text is automatically typed into the focused application
-- **Clipboard paste mode** - Uses clipboard for reliable text insertion
-- **Overlay** - Floating overlay shows recording/processing status with color-coded indicators
-- **Subtitle bar** - Draggable, resizable subtitle display with auto font detection for CJK scripts
-- **SRT subtitle export** - File transcription outputs standard SRT subtitle files with timestamps
+- Type directly into the active window
+- Clipboard paste mode for reliable insertion
+- Floating subtitle bar (draggable, resizable, auto CJK fonts)
+- Color-coded overlay: gray (idle), green (listening), red (recording), yellow (processing)
+- SRT subtitle file export with timestamps
 
-### Backends
-- **Faster Whisper (CTranslate2)** - High-performance inference with INT8/FP16 quantization
-- **Whisper.cpp** - Whisper via whisper.cpp with GGML models
-- **Pluggable backend system** - Backends are DLLs loaded at runtime, easy to add new ones
-- **GPU acceleration** - CUDA support with automatic CUDA/cuDNN detection
+### Backends & Models
+- **Faster Whisper (CTranslate2)** — optimized INT8/FP16 inference
+- **Whisper.cpp** — GGML model support
+- Pluggable DLL backend system
+- Models from Tiny (75 MB) to Large v3 (3000 MB), English-only and multilingual
+- One-click download from Hugging Face
 
-### Models
-- Multiple model sizes from Tiny (75 MB) to Large v3 (3000 MB)
-- English-only and multilingual variants
-- One-click download from Hugging Face in the setup wizard
+### Interface
+- Tabbed setup wizard (Model, Audio, Hotkeys, GPU)
+- System tray with language selection and quick settings
+- Configurable hotkeys for push-to-talk and toggle-listen
+- Tunable silence timeout and streaming interval
 
-### User Interface
-- **Setup wizard** - Tabbed egui interface for model selection, audio settings, hotkeys, and GPU configuration
-- **System tray** - Full-featured tray menu with language selection, audio source toggle, and settings access
-- **Configurable hotkeys** - Customizable push-to-talk and toggle-listen key bindings
-- **Tunable always-listen** - Adjustable silence timeout (0.1-5s) and streaming interval (0.2-3s)
-
-### Audio
-- **Microphone input** - Select from available input devices
-- **System audio capture** - Loopback recording of desktop audio
-- **16kHz mono resampling** - Automatic conversion from any sample rate
-
-## Quick Start
+## Build from Source
 
 ```batch
-:: Build
 cargo build -p app --release
-
-:: Run (opens setup wizard on first launch)
 target\release\app.exe
-
-:: Transcribe an audio file to SRT
-target\release\app.exe --transcribe recording.mp3
-target\release\app.exe --transcribe recording.wav --output custom.srt
 ```
 
-## Usage
+### File Transcription
 
-1. Run `app.exe` - the setup wizard opens on first launch
-2. Select a model and click **Download**
-3. Configure audio source, language, and hotkeys in the tabs
-4. Click **Start** to launch the app
-5. Use the system tray icon to access settings and toggle features
-
-### Status Indicators
-| Color | Meaning |
-|-------|---------|
-| Gray | Idle |
-| Green | Always-listen mode active, waiting for speech |
-| Red | Recording / speech detected |
-| Yellow | Processing transcription |
+```batch
+app.exe --transcribe recording.mp3
+app.exe --transcribe meeting.wav --output subtitles.srt
+```
 
 ## Config & Logs
 
@@ -87,7 +131,6 @@ crates/backends/
   whisper-cpp/         Whisper.cpp backend (GGML)
   whisper-ct2/         Faster Whisper backend (CTranslate2)
 tools/scripts/         Build and packaging scripts
-docs/                  Project documentation
 ```
 
 ## Packaging
@@ -95,7 +138,3 @@ docs/                  Project documentation
 ```batch
 tools\scripts\package_release.bat [cuda|cpu]
 ```
-
-## Changelog
-
-See `CHANGELOG.md` for release notes.
