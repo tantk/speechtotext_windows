@@ -59,6 +59,9 @@ pub struct Config {
     /// Target language code ("original" for no translation, or language code like "en")
     #[serde(default = "default_target_language")]
     pub target_language: String,
+    /// Favorite input languages shown in the system tray
+    #[serde(default)]
+    pub favorite_languages: Vec<String>,
     /// Type transcription into the active window
     #[serde(default = "default_true")]
     pub type_to_window: bool,
@@ -135,6 +138,7 @@ impl Default for Config {
             translate_mode: false,
             input_language: default_input_language(),
             target_language: default_target_language(),
+            favorite_languages: Vec::new(),
             type_to_window: true,
             subtitle_visible: true,
             subtitle_x: None,
@@ -636,6 +640,7 @@ impl Config {
             translate_mode: false,
             input_language: default_input_language(),
             target_language: default_target_language(),
+            favorite_languages: Vec::new(),
             type_to_window: true,
             subtitle_visible: true,
             subtitle_x: None,

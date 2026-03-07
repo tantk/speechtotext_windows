@@ -53,6 +53,7 @@ struct SetupApp {
     // Language
     input_language: String,
     target_language: String,
+    favorite_languages: Vec<String>,
 
     // Hotkeys
     push_to_talk_hotkey: String,
@@ -194,6 +195,10 @@ impl SetupApp {
                 .as_ref()
                 .map(|c| c.target_language.clone())
                 .unwrap_or_else(|| "original".to_string()),
+            favorite_languages: existing_config
+                .as_ref()
+                .map(|c| c.favorite_languages.clone())
+                .unwrap_or_default(),
             push_to_talk_hotkey: existing_config
                 .as_ref()
                 .map(|c| c.hotkey_push_to_talk.clone())
@@ -274,6 +279,7 @@ impl SetupApp {
         config.audio_source = self.audio_source;
         config.input_language = self.input_language.clone();
         config.target_language = self.target_language.clone();
+        config.favorite_languages = self.favorite_languages.clone();
         config.translate_mode = self.target_language != "original";
         Some(config)
     }
@@ -575,20 +581,36 @@ impl SetupApp {
         };
         egui::ComboBox::from_id_salt("input_language")
             .selected_text(&input_lang_display)
-            .width(250.0)
+            .width(350.0)
             .show_ui(ui, |ui| {
                 // Auto option
                 ui.selectable_value(&mut self.input_language, "auto".to_string(), "Auto (detect)");
                 ui.separator();
-                // All Whisper languages
+                // All Whisper languages with favorite toggle
                 for &(code, name) in WHISPER_LANGUAGES {
-                    ui.selectable_value(
-                        &mut self.input_language,
-                        code.to_string(),
-                        name,
-                    );
+                    let is_fav = self.favorite_languages.contains(&code.to_string());
+                    let selected = self.input_language == code;
+                    ui.horizontal(|ui| {
+                        // Star button
+                        let star = if is_fav { "\u{2605}" } else { "\u{2606}" };
+                        if ui.small_button(star).clicked() {
+                            if is_fav {
+                                self.favorite_languages.retain(|c| c != code);
+                            } else {
+                                self.favorite_languages.push(code.to_string());
+                            }
+                        }
+                        if ui.selectable_label(selected, name).clicked() {
+                            self.input_language = code.to_string();
+                        }
+                    });
                 }
             });
+        ui.label(
+            egui::RichText::new("Click \u{2606} to add languages to the system tray quick-switch menu")
+                .color(egui::Color32::GRAY)
+                .small(),
+        );
 
         ui.add_space(8.0);
 

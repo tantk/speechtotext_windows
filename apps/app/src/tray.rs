@@ -176,6 +176,7 @@ impl TrayManager {
         system_audio: bool,
         input_language: &str,
         target_language: &str,
+        favorite_languages: &[String],
         subtitle_visible: bool,
         type_to_window: bool,
     ) -> Result<Self> {
@@ -197,7 +198,7 @@ impl TrayManager {
         audio_source_submenu.append(&mic_source_item)?;
         audio_source_submenu.append(&system_audio_source_item)?;
 
-        // Input language submenu
+        // Input language submenu (only favorites + auto)
         let input_lang_submenu = Submenu::new("Input Language", true);
         let mut input_lang_items = Vec::new();
         let auto_item = CheckMenuItem::new(
@@ -208,11 +209,29 @@ impl TrayManager {
         );
         input_lang_submenu.append(&auto_item)?;
         input_lang_items.push((auto_item, "auto".to_string()));
-        input_lang_submenu.append(&PredefinedMenuItem::separator())?;
-        for &(code, name) in WHISPER_LANGUAGES {
-            let item = CheckMenuItem::new(name, true, input_language == code, None);
+        if !favorite_languages.is_empty() {
+            input_lang_submenu.append(&PredefinedMenuItem::separator())?;
+            for &(code, name) in WHISPER_LANGUAGES {
+                if favorite_languages.iter().any(|f| f == code) {
+                    let item = CheckMenuItem::new(name, true, input_language == code, None);
+                    input_lang_submenu.append(&item)?;
+                    input_lang_items.push((item, code.to_string()));
+                }
+            }
+        }
+        // If the currently selected language isn't in the favorites, add it so it can be shown as checked
+        if input_language != "auto"
+            && !favorite_languages.iter().any(|f| f == input_language)
+        {
+            let name = WHISPER_LANGUAGES
+                .iter()
+                .find(|(c, _)| *c == input_language)
+                .map(|(_, n)| *n)
+                .unwrap_or(input_language);
+            input_lang_submenu.append(&PredefinedMenuItem::separator())?;
+            let item = CheckMenuItem::new(name, true, true, None);
             input_lang_submenu.append(&item)?;
-            input_lang_items.push((item, code.to_string()));
+            input_lang_items.push((item, input_language.to_string()));
         }
 
         // Target language submenu (only Original + English, since Whisper only translates to English)

@@ -968,6 +968,7 @@ fn run_app(mut config: Config) -> Result<()> {
         config.audio_source == config::AudioSource::SystemAudio,
         &config.input_language,
         &config.target_language,
+        &config.favorite_languages,
         config.subtitle_visible,
         config.type_to_window,
     ) {
