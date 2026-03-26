@@ -7,6 +7,7 @@ use crate::downloader::{self, DownloadProgress};
 use crate::tray::WHISPER_LANGUAGES;
 use cpal::traits::{DeviceTrait, HostTrait};
 use eframe::egui;
+use parking_lot::Mutex;
 use std::sync::Arc;
 
 const DEFAULT_DEVICE_LABEL: &str = "<Default device>";
@@ -25,6 +26,7 @@ enum Tab {
     Audio,
     Hotkeys,
     Gpu,
+    Transcribe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,6 +83,13 @@ struct SetupApp {
 
     // Should exit
     should_start: bool,
+
+    // Transcribe tab state
+    transcribe_url: String,
+    transcribe_output_path: Option<String>,
+    transcribe_status: String,
+    transcribe_log: Arc<Mutex<Vec<String>>>,
+    transcribe_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SetupApp {
@@ -231,6 +240,11 @@ impl SetupApp {
             overlay_x: existing_config.as_ref().and_then(|c| c.overlay_x),
             overlay_y: existing_config.as_ref().and_then(|c| c.overlay_y),
             should_start: false,
+            transcribe_url: String::new(),
+            transcribe_output_path: None,
+            transcribe_status: String::new(),
+            transcribe_log: Arc::new(Mutex::new(Vec::new())),
+            transcribe_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -381,6 +395,7 @@ impl eframe::App for SetupApp {
                 ui.selectable_value(&mut self.current_tab, Tab::Audio, "Audio");
                 ui.selectable_value(&mut self.current_tab, Tab::Hotkeys, "Hotkeys");
                 ui.selectable_value(&mut self.current_tab, Tab::Gpu, "GPU");
+                ui.selectable_value(&mut self.current_tab, Tab::Transcribe, "Transcribe");
             });
         });
 
@@ -422,6 +437,7 @@ impl eframe::App for SetupApp {
                 Tab::Audio => self.render_audio_tab(ui),
                 Tab::Hotkeys => self.render_hotkeys_tab(ui),
                 Tab::Gpu => self.render_gpu_tab(ui),
+                Tab::Transcribe => self.render_transcribe_tab(ui, ctx),
             }
         });
     }
@@ -900,6 +916,153 @@ impl SetupApp {
             ));
         }
     }
+
+    fn render_transcribe_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Transcribe Online Video");
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Download audio from YouTube or other platforms and transcribe to SRT subtitles.")
+                .color(egui::Color32::GRAY),
+        );
+        ui.add_space(8.0);
+
+        let is_busy = self.transcribe_busy.load(std::sync::atomic::Ordering::Relaxed);
+
+        // URL input
+        ui.label("Video URL:");
+        ui.add_enabled(
+            !is_busy,
+            egui::TextEdit::singleline(&mut self.transcribe_url)
+                .hint_text("https://www.youtube.com/watch?v=...")
+                .desired_width(ui.available_width() - 16.0),
+        );
+
+        ui.add_space(8.0);
+
+        // Output path
+        ui.horizontal(|ui| {
+            ui.label("Output SRT:");
+            let output_display = self
+                .transcribe_output_path
+                .as_deref()
+                .unwrap_or("(auto - same folder as video title)");
+            ui.label(
+                egui::RichText::new(output_display).color(egui::Color32::GRAY),
+            );
+            if ui.add_enabled(!is_busy, egui::Button::new("Browse...")).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Save SRT file as")
+                    .add_filter("SRT Subtitles", &["srt"])
+                    .save_file()
+                {
+                    self.transcribe_output_path = Some(path.display().to_string());
+                }
+            }
+        });
+
+        ui.add_space(12.0);
+
+        // Action button
+        ui.horizontal(|ui| {
+            if is_busy {
+                ui.add(egui::Spinner::new());
+                ui.label("Processing...");
+            } else {
+                let can_start = !self.transcribe_url.is_empty()
+                    && self.selected_model.is_some()
+                    && self.model_downloaded;
+                if ui
+                    .add_enabled(can_start, egui::Button::new("Download & Transcribe"))
+                    .clicked()
+                {
+                    self.start_transcribe_url();
+                }
+                if !can_start && self.transcribe_url.is_empty() {
+                    ui.label(
+                        egui::RichText::new("Paste a URL above")
+                            .color(egui::Color32::GRAY)
+                            .small(),
+                    );
+                } else if !can_start {
+                    ui.label(
+                        egui::RichText::new("Select and download a model in the Model tab first")
+                            .color(egui::Color32::YELLOW)
+                            .small(),
+                    );
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+
+        if !self.transcribe_status.is_empty() {
+            ui.label(&self.transcribe_status);
+        }
+
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+
+        // Log output
+        ui.label("Log:");
+        let log = self.transcribe_log.lock();
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for line in log.iter() {
+                    ui.monospace(line);
+                }
+            });
+        drop(log);
+
+        if is_busy {
+            ctx.request_repaint();
+        }
+    }
+
+    fn start_transcribe_url(&mut self) {
+        use std::sync::atomic::Ordering;
+
+        if self.transcribe_busy.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let url = self.transcribe_url.trim().to_string();
+        if url.is_empty() {
+            self.transcribe_status = "Please enter a URL.".to_string();
+            return;
+        }
+
+        // Build config from current state
+        let config = match self.build_config() {
+            Some(c) => c,
+            None => {
+                self.transcribe_status = "Error: no model selected or config invalid.".to_string();
+                return;
+            }
+        };
+
+        let output_path = self.transcribe_output_path.clone();
+        let log = self.transcribe_log.clone();
+        let busy = self.transcribe_busy.clone();
+
+        log.lock().clear();
+        self.transcribe_status = "Starting...".to_string();
+        busy.store(true, Ordering::Relaxed);
+
+        std::thread::spawn(move || {
+            let result = run_transcribe_url(&url, output_path.as_deref(), &config, &log);
+            match result {
+                Ok(srt_path) => {
+                    log.lock().push(format!("Done! SRT saved to: {}", srt_path));
+                }
+                Err(e) => {
+                    log.lock().push(format!("Error: {}", e));
+                }
+            }
+            busy.store(false, Ordering::Relaxed);
+        });
+    }
 }
 
 fn is_model_downloaded(unified: &UnifiedModel) -> bool {
@@ -1037,6 +1200,228 @@ fn format_egui_key(key: egui::Key, modifiers: &egui::Modifiers) -> Option<String
     }
     parts.push(key_name);
     Some(parts.join("+"))
+}
+
+/// Download audio from a URL using yt-dlp, then transcribe to SRT.
+fn run_transcribe_url(
+    url: &str,
+    output_srt: Option<&str>,
+    config: &Config,
+    log: &Arc<Mutex<Vec<String>>>,
+) -> anyhow::Result<String> {
+    use crate::audio_file;
+    use crate::backend_loader::LoadedBackend;
+    use crate::config;
+    use crate::srt;
+
+    // 1. Download audio with yt-dlp
+    log.lock().push("Checking for yt-dlp...".to_string());
+
+    let yt_dlp = find_or_download_yt_dlp(log)?;
+
+    let temp_dir = std::env::temp_dir().join("speechwindows_transcribe");
+    std::fs::create_dir_all(&temp_dir)?;
+    let audio_path = temp_dir.join("audio.wav");
+
+    log.lock().push(format!("Downloading audio from: {}", url));
+
+    let dl_output = std::process::Command::new(&yt_dlp)
+        .args([
+            "--extract-audio",
+            "--audio-format", "wav",
+            "--output", &audio_path.with_extension("").display().to_string(),
+            "--no-playlist",
+            "--quiet",
+            "--progress",
+            url,
+        ])
+        .output()?;
+
+    if !dl_output.status.success() {
+        let stderr = String::from_utf8_lossy(&dl_output.stderr);
+        return Err(anyhow::anyhow!("yt-dlp failed: {}", stderr.trim()));
+    }
+
+    // yt-dlp may produce the file with .wav extension
+    if !audio_path.exists() {
+        // Try finding any audio file in temp dir
+        let found = std::fs::read_dir(&temp_dir)?
+            .filter_map(|e| e.ok())
+            .find(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("audio") && (name.ends_with(".wav") || name.ends_with(".opus") || name.ends_with(".m4a") || name.ends_with(".mp3"))
+            })
+            .map(|e| e.path());
+        if let Some(found_path) = found {
+            if found_path != audio_path {
+                std::fs::rename(&found_path, &audio_path)?;
+            }
+        } else {
+            return Err(anyhow::anyhow!("Downloaded audio file not found"));
+        }
+    }
+
+    log.lock().push("Audio downloaded. Decoding...".to_string());
+
+    // 2. Decode audio
+    let (samples, _) = audio_file::decode_audio_file(&audio_path)?;
+    let duration = samples.len() as f64 / 16000.0;
+    log.lock().push(format!("Audio: {:.1}s", duration));
+
+    // 3. Load model
+    log.lock().push("Loading model...".to_string());
+    config::setup_cuda_env(config);
+
+    let backend_dir = config::get_backends_dir()?.join(&config.backend_id);
+    let backend = LoadedBackend::load(&backend_dir)?;
+
+    let model_load_path = if let Some(m) = backend
+        .manifest
+        .models
+        .iter()
+        .find(|m| m.id == config.model_name)
+    {
+        if config.model_path.is_dir() && m.files.len() == 1 {
+            let candidate = config.model_path.join(&m.files[0]);
+            if candidate.exists() {
+                candidate
+            } else {
+                config.model_path.clone()
+            }
+        } else {
+            config.model_path.clone()
+        }
+    } else {
+        config.model_path.clone()
+    };
+
+    let model = backend.create_model(&model_load_path, config.use_gpu)?;
+    log.lock().push(format!("Model loaded ({}).", backend.display_name));
+
+    // 4. Transcribe in chunks
+    let chunk_samples = 16000 * 30;
+    let chunks: Vec<&[f32]> = samples.chunks(chunk_samples).collect();
+    let total = chunks.len();
+    log.lock().push(format!("Processing {} chunks...", total));
+
+    let mut all_segments: Vec<(f64, f64, String)> = Vec::new();
+    let lang = if config.input_language == "auto" {
+        None
+    } else {
+        Some(config.input_language.as_str())
+    };
+
+    let should_translate =
+        config.target_language == "en" && config.input_language != "en";
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let offset = i as f64 * 30.0;
+        let result = if should_translate {
+            model.translate_with_timestamps(chunk, lang)
+        } else {
+            model.transcribe_with_timestamps(chunk, lang)
+        };
+        match result {
+            Ok(text) => {
+                let segments = srt::parse_timestamped_text(&text, offset);
+                all_segments.extend(segments);
+            }
+            Err(e) => {
+                log.lock().push(format!("Warning: chunk {} failed: {}", i + 1, e));
+            }
+        }
+        log.lock().push(format!("Chunk {}/{} done", i + 1, total));
+    }
+
+    // 5. Write SRT
+    let srt_content = srt::generate_srt(&all_segments);
+    let srt_path = if let Some(p) = output_srt {
+        p.to_string()
+    } else {
+        // Default: next to temp audio file
+        let p = temp_dir.join("output.srt");
+        p.display().to_string()
+    };
+    std::fs::write(&srt_path, &srt_content)?;
+
+    log.lock().push(format!(
+        "Wrote {} segments to SRT.",
+        all_segments.len()
+    ));
+
+    // Clean up temp audio
+    let _ = std::fs::remove_file(&audio_path);
+
+    Ok(srt_path)
+}
+
+/// Find yt-dlp executable, or auto-download it next to the app exe.
+fn find_or_download_yt_dlp(log: &Arc<Mutex<Vec<String>>>) -> anyhow::Result<String> {
+    // 1. Check if yt-dlp is in PATH
+    if let Ok(output) = std::process::Command::new("yt-dlp").arg("--version").output() {
+        if output.status.success() {
+            let ver = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            log.lock().push(format!("Found yt-dlp in PATH ({})", ver));
+            return Ok("yt-dlp".to_string());
+        }
+    }
+
+    // 2. Check next to our exe
+    if let Ok(exe_dir) = crate::config::get_exe_dir() {
+        let local_path = exe_dir.join("yt-dlp.exe");
+        if local_path.exists() {
+            log.lock().push("Found yt-dlp.exe next to app.".to_string());
+            return Ok(local_path.display().to_string());
+        }
+    }
+
+    // 3. Check common Python install locations
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        for ver in &["312", "313", "311", "310"] {
+            let p = format!(
+                "{}\\AppData\\Local\\Programs\\Python\\Python{}\\Scripts\\yt-dlp.exe",
+                home, ver
+            );
+            if std::path::Path::new(&p).exists() {
+                log.lock().push(format!("Found yt-dlp at {}", p));
+                return Ok(p);
+            }
+        }
+    }
+
+    // 4. Auto-download yt-dlp.exe
+    log.lock().push("yt-dlp not found. Downloading...".to_string());
+
+    let download_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+    let dest = crate::config::get_exe_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("yt-dlp.exe");
+
+    let resp = reqwest::blocking::get(download_url)
+        .map_err(|e| anyhow::anyhow!("Failed to download yt-dlp: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Failed to download yt-dlp: HTTP {}",
+            resp.status()
+        ));
+    }
+
+    let bytes = resp
+        .bytes()
+        .map_err(|e| anyhow::anyhow!("Failed to read yt-dlp download: {}", e))?;
+
+    std::fs::write(&dest, &bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to save yt-dlp.exe: {}", e))?;
+
+    log.lock().push(format!(
+        "Downloaded yt-dlp.exe ({:.1} MB) to {}",
+        bytes.len() as f64 / 1_000_000.0,
+        dest.display()
+    ));
+
+    Ok(dest.display().to_string())
 }
 
 /// Run the setup wizard. This function never returns - it either:

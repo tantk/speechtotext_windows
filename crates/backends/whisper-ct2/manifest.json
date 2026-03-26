@@ -179,6 +179,46 @@
         "tokenizer.json": "sha256:A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5",
         "vocabulary.json": "sha256:B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6"
       }
+    },
+    {
+      "id": "distil-whisper-small-en",
+      "display_name": "Distil-Whisper Small (EN) [6x faster]",
+      "folder_name": "faster-distil-whisper-small.en",
+      "size_mb": 335,
+      "hf_repo": "Systran/faster-distil-whisper-small.en",
+      "download_url": "https://huggingface.co/Systran/faster-distil-whisper-small.en",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.json"],
+      "is_english_only": true
+    },
+    {
+      "id": "distil-whisper-medium-en",
+      "display_name": "Distil-Whisper Medium (EN) [6x faster]",
+      "folder_name": "faster-distil-whisper-medium.en",
+      "size_mb": 755,
+      "hf_repo": "Systran/faster-distil-whisper-medium.en",
+      "download_url": "https://huggingface.co/Systran/faster-distil-whisper-medium.en",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.json"],
+      "is_english_only": true
+    },
+    {
+      "id": "distil-whisper-large-v2",
+      "display_name": "Distil-Whisper Large v2 (EN) [6x faster]",
+      "folder_name": "faster-distil-whisper-large-v2",
+      "size_mb": 1510,
+      "hf_repo": "Systran/faster-distil-whisper-large-v2",
+      "download_url": "https://huggingface.co/Systran/faster-distil-whisper-large-v2",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.json"],
+      "is_english_only": true
+    },
+    {
+      "id": "distil-whisper-large-v3",
+      "display_name": "Distil-Whisper Large v3 (EN) [6x faster]",
+      "folder_name": "faster-distil-whisper-large-v3",
+      "size_mb": 1510,
+      "hf_repo": "Systran/faster-distil-whisper-large-v3",
+      "download_url": "https://huggingface.co/Systran/faster-distil-whisper-large-v3",
+      "files": ["model.bin", "config.json", "preprocessor_config.json", "tokenizer.json", "vocabulary.json"],
+      "is_english_only": true
     }
   ],
   "capabilities": {
