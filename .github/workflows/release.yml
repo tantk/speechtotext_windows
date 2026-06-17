@@ -133,17 +133,19 @@ jobs:
           Copy-Item "$src\lib"     -Destination $cudnnRoot -Recurse -Force
           Copy-Item "$src\bin"     -Destination $cudnnRoot -Recurse -Force
 
-          # Use 8.3 short paths (no spaces) to avoid CMake/nvcc command-line escaping issues.
+          # Use 8.3 short paths (no spaces) with FORWARD slashes. CTranslate2's legacy
+          # FindCUDA.cmake treats backslashes as escapes and mangles the path, so forward
+          # slashes are required (matches the local .cargo/config.toml convention).
           $fso = New-Object -ComObject Scripting.FileSystemObject
-          $cudaShort  = $fso.GetFolder($cudaRoot).ShortPath
-          $cudnnShort = $fso.GetFolder($cudnnRoot).ShortPath
+          $cudaShort  = $fso.GetFolder($cudaRoot).ShortPath  -replace '\\','/'
+          $cudnnShort = $fso.GetFolder($cudnnRoot).ShortPath -replace '\\','/'
           $env_lines = @(
             "CUDA_PATH=$cudaShort",
             "CUDA_PATH_V13_3=$cudaShort",          # MSBuild CUDA targets read CudaToolkitDir from this
             "CUDA_TOOLKIT_ROOT_DIR=$cudaShort",
-            "CMAKE_CUDA_COMPILER=$cudaShort\bin\nvcc.exe",
-            "CMAKE_INCLUDE_PATH=$cudnnShort\include",
-            "CMAKE_LIBRARY_PATH=$cudnnShort\lib\x64",
+            "CMAKE_CUDA_COMPILER=$cudaShort/bin/nvcc.exe",
+            "CMAKE_INCLUDE_PATH=$cudnnShort/include",
+            "CMAKE_LIBRARY_PATH=$cudnnShort/lib/x64",
             "CUDAARCHS=$env:CUDA_ARCH",            # forces whisper.cpp off 'native' (no GPU on runner)
             "CUDA_ARCH_LIST=$env:CUDA_ARCH"        # ct2rs / CTranslate2 arch
           )
