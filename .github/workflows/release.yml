@@ -65,6 +65,9 @@ jobs:
           Start-Process -FilePath $out -ArgumentList '/S' -Wait
           & "C:\Program Files\LLVM\bin\clang.exe" --version
 
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
       - name: Configure portable build env overrides
         run: |
           # Override the local-machine paths baked into .cargo/config.toml with
@@ -74,7 +77,9 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin"                 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # Let clang auto-detect MSVC + Windows SDK; only force its own builtin headers.
           'BINDGEN_EXTRA_CLANG_ARGS=-isystem "C:/Program Files/LLVM/lib/clang/21/include"' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "CMAKE_GENERATOR=Visual Studio 17 2022"                   | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Use Ninja (not the VS generator): builds directly with the cl/nvcc that
+          # msvc-dev-cmd put on PATH, avoiding VS-instance detection and MSBuild CUDA targets.
+          "CMAKE_GENERATOR=Ninja"                                   | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # ----- CUDA-only toolchain setup -------------------------------------------------
       - name: Cache CUDA + cuDNN installers
