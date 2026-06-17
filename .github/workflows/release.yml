@@ -83,6 +83,9 @@ jobs:
           # CUDA 13.x CCCL (Thrust/CUB) headers require MSVC's conforming preprocessor.
           # The CL env var prepends this to every cl.exe invocation (incl. nvcc host compiles).
           "CL=/Zc:preprocessor"                                     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # whisper.cpp auto-wraps the compiler with ccache, which intermittently returns
+          # success without writing the .obj under MSVC (-> LNK1181). No benefit in CI; disable it.
+          "CCACHE_DISABLE=1"                                        | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # ----- CUDA-only toolchain setup -------------------------------------------------
       - name: Cache CUDA + cuDNN installers
