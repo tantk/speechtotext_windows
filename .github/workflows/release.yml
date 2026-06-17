@@ -80,6 +80,9 @@ jobs:
           # Use Ninja (not the VS generator): builds directly with the cl/nvcc that
           # msvc-dev-cmd put on PATH, avoiding VS-instance detection and MSBuild CUDA targets.
           "CMAKE_GENERATOR=Ninja"                                   | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # CUDA 13.x CCCL (Thrust/CUB) headers require MSVC's conforming preprocessor.
+          # The CL env var prepends this to every cl.exe invocation (incl. nvcc host compiles).
+          "CL=/Zc:preprocessor"                                     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # ----- CUDA-only toolchain setup -------------------------------------------------
       - name: Cache CUDA + cuDNN installers
