@@ -1,0 +1,232 @@
+name: Release
+
+# Builds both a CPU-only and a CUDA-enabled package on GitHub-hosted runners.
+# Compiling CUDA does NOT require a GPU (nvcc cross-compiles for sm_89); a GPU is
+# only needed at runtime on the end user's machine.
+#
+# Triggers:
+#   - pushing a version tag (v*)  -> builds both variants AND publishes a Release
+#   - manual dispatch             -> builds both variants, uploads artifacts only
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+env:
+  # Versions pinned to match the local known-good toolchain.
+  LLVM_VERSION: "21.1.8"
+  CUDA_VERSION: "13.3.0"
+  CUDA_MAJORMINOR: "13.3"
+  CUDNN_ARCHIVE: "cudnn-windows-x86_64-9.18.1.3_cuda13-archive"
+  CUDA_ARCH: "89"   # RTX 40xx = compute capability 8.9
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, cuda]
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.variant }}
+
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        # Exports VSINSTALLDIR / VCToolsInstallDir / VCToolsVersion etc. to the job
+        # environment, which (force=false) override the BuildTools paths in
+        # .cargo/config.toml with this runner's actual VS install.
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }} (for bindgen)
+        # clang 22 breaks bindgen 0.71.1, so pin the known-good 21.x.
+        run: |
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
+          $out = "$env:RUNNER_TEMP\llvm.exe"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          Start-Process -FilePath $out -ArgumentList '/S' -Wait
+          & "C:\Program Files\LLVM\bin\clang.exe" --version
+
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Configure portable build env overrides
+        run: |
+          # Override the local-machine paths baked into .cargo/config.toml with
+          # values correct for this runner. These win because Cargo's [env] does
+          # not override variables already present in the environment.
+          "CMAKE=${{ github.workspace }}\tools\cmake\bin\cmake.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "LIBCLANG_PATH=C:\Program Files\LLVM\bin"                 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Let clang auto-detect MSVC + Windows SDK; only force its own builtin headers.
+          'BINDGEN_EXTRA_CLANG_ARGS=-isystem "C:/Program Files/LLVM/lib/clang/21/include"' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Use Ninja (not the VS generator): builds directly with the cl/nvcc that
+          # msvc-dev-cmd put on PATH, avoiding VS-instance detection and MSBuild CUDA targets.
+          "CMAKE_GENERATOR=Ninja"                                   | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # CUDA 13.x CCCL (Thrust/CUB) headers require MSVC's conforming preprocessor.
+          # The CL env var prepends this to every cl.exe invocation (incl. nvcc host compiles).
+          "CL=/Zc:preprocessor"                                     | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # whisper.cpp auto-wraps the compiler with ccache, which intermittently returns
+          # success without writing the .obj under MSVC (-> LNK1181). No benefit in CI; disable it.
+          "CCACHE_DISABLE=1"                                        | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ----- CUDA-only toolchain setup -------------------------------------------------
+      - name: Cache CUDA + cuDNN installers
+        if: matrix.variant == 'cuda'
+        id: cuda-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\cuda-dl
+          key: cuda-${{ env.CUDA_VERSION }}-${{ env.CUDNN_ARCHIVE }}
+
+      - name: Download CUDA + cuDNN installers
+        if: matrix.variant == 'cuda' && steps.cuda-cache.outputs.cache-hit != 'true'
+        run: |
+          $dir = "$env:RUNNER_TEMP\cuda-dl"; New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $cuda = "https://developer.download.nvidia.com/compute/cuda/$env:CUDA_VERSION/local_installers/cuda_${env:CUDA_VERSION}_windows.exe"
+          Write-Host "Downloading CUDA: $cuda"
+          Invoke-WebRequest -Uri $cuda -OutFile "$dir\cuda.exe" -UseBasicParsing
+          $cudnn = "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/$env:CUDNN_ARCHIVE.zip"
+          Write-Host "Downloading cuDNN: $cudnn"
+          Invoke-WebRequest -Uri $cudnn -OutFile "$dir\cudnn.zip" -UseBasicParsing
+
+      - name: Install CUDA toolkit + cuDNN
+        if: matrix.variant == 'cuda'
+        run: |
+          $dir = "$env:RUNNER_TEMP\cuda-dl"
+          # Install only the toolkit leaf components needed to build (no display driver).
+          $comp = @('nvcc','crt','cudart','cuobjdump','nvdisasm','nvprune','cuxxfilt','nvvm',
+                    'nvptxcompiler','nvjitlink','nvfatbin','nvrtc','nvrtc_dev','thrust',
+                    'cublas','cublas_dev','cufft','cufft_dev','curand','curand_dev',
+                    'cusolver','cusolver_dev','cusparse','cusparse_dev','npp','npp_dev',
+                    'nvtx','nvml_dev','cuda_profiler_api','nvjpeg','nvjpeg_dev',
+                    'visual_studio_integration') | ForEach-Object { "${_}_$env:CUDA_MAJORMINOR" }
+          Write-Host "Installing CUDA components..."
+          $p = Start-Process -FilePath "$dir\cuda.exe" -ArgumentList (@('-s') + $comp) -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "CUDA installer failed: $($p.ExitCode)" }
+          $cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$env:CUDA_MAJORMINOR"
+          if (-not (Test-Path "$cudaRoot\bin\nvcc.exe")) { throw "nvcc not found after install" }
+
+          # Extract cuDNN (redist layout: include/, lib/x64/, bin/x64/)
+          $cudnnRoot = "C:\Program Files\NVIDIA\CUDNN\v9.18"
+          Expand-Archive -Path "$dir\cudnn.zip" -DestinationPath "$env:RUNNER_TEMP\cudnn" -Force
+          $src = (Get-ChildItem "$env:RUNNER_TEMP\cudnn" -Directory | Select-Object -First 1).FullName
+          New-Item -ItemType Directory -Force -Path $cudnnRoot | Out-Null
+          Copy-Item "$src\include" -Destination $cudnnRoot -Recurse -Force
+          Copy-Item "$src\lib"     -Destination $cudnnRoot -Recurse -Force
+          Copy-Item "$src\bin"     -Destination $cudnnRoot -Recurse -Force
+
+          # Use 8.3 short paths (no spaces) with FORWARD slashes. CTranslate2's legacy
+          # FindCUDA.cmake treats backslashes as escapes and mangles the path, so forward
+          # slashes are required (matches the local .cargo/config.toml convention).
+          $fso = New-Object -ComObject Scripting.FileSystemObject
+          $cudaShort  = $fso.GetFolder($cudaRoot).ShortPath  -replace '\\','/'
+          $cudnnShort = $fso.GetFolder($cudnnRoot).ShortPath -replace '\\','/'
+          $env_lines = @(
+            "CUDA_PATH=$cudaShort",
+            "CUDA_PATH_V13_3=$cudaShort",          # MSBuild CUDA targets read CudaToolkitDir from this
+            "CUDA_TOOLKIT_ROOT_DIR=$cudaShort",
+            "CMAKE_CUDA_COMPILER=$cudaShort/bin/nvcc.exe",
+            "CMAKE_INCLUDE_PATH=$cudnnShort/include",
+            "CMAKE_LIBRARY_PATH=$cudnnShort/lib/x64",
+            "CUDAARCHS=$env:CUDA_ARCH",            # forces whisper.cpp off 'native' (no GPU on runner)
+            "CUDA_ARCH_LIST=$env:CUDA_ARCH"        # ct2rs / CTranslate2 arch
+          )
+          $env_lines | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # ----- Build ---------------------------------------------------------------------
+      - name: Build main app
+        run: cargo build -p app --release
+
+      - name: Build whisper-cpp backend (${{ matrix.variant }})
+        run: |
+          if ("${{ matrix.variant }}" -eq "cuda") {
+            cargo build -p whisper-cpp --release --features cuda
+          } else {
+            cargo build -p whisper-cpp --release
+          }
+
+      - name: Build whisper-ct2 backend (${{ matrix.variant }})
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"   # ct2 only; NOT for cdylib backends above
+        run: |
+          if ("${{ matrix.variant }}" -eq "cuda") {
+            cargo build -p whisper-ct2 --release --features cuda
+          } else {
+            cargo build -p whisper-ct2 --release
+          }
+
+      # ----- Package -------------------------------------------------------------------
+      - name: Assemble release package
+        id: pkg
+        run: |
+          $ver = if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $env:GITHUB_REF -replace 'refs/tags/v',''
+          } else {
+            (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          }
+          $name = "app-v$ver-${{ matrix.variant }}"
+          $dir  = "dist\$name"
+          New-Item -ItemType Directory -Force -Path "$dir\backends\whisper-cpp","$dir\backends\whisper-ct2" | Out-Null
+          Copy-Item target\release\app.exe          "$dir\"
+          Copy-Item target\release\whisper_cpp.dll  "$dir\backends\whisper-cpp\"
+          Copy-Item crates\backends\whisper-cpp\manifest.json "$dir\backends\whisper-cpp\"
+          Copy-Item target\release\whisper_ct2.dll  "$dir\backends\whisper-ct2\"
+          Copy-Item crates\backends\whisper-ct2\manifest.json "$dir\backends\whisper-ct2\"
+          $gpu = if ("${{ matrix.variant }}" -eq "cuda") {
+            "This build includes CUDA (NVIDIA GPU) support. Install CUDA Toolkit 13.x and cuDNN 9.x, then enable 'Use GPU' in the setup wizard."
+          } else {
+            "This is a CPU-only build. Download the CUDA package for GPU acceleration."
+          }
+          @"
+          App v$ver (${{ matrix.variant }})
+
+          1. Run app.exe
+          2. Select a model and click Download
+          3. Click Start
+
+          GPU: $gpu
+
+          Models download to .\models\ ; config saved as config-<exe>.json next to the exe.
+          "@ | Out-File "$dir\README.txt" -Encoding utf8
+          Compress-Archive -Path "$dir\*" -DestinationPath "dist\$name.zip" -Force
+          "zip=dist\$name.zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: ${{ steps.pkg.outputs.zip }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.zip
+          generate_release_notes: true
